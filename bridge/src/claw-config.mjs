@@ -41,6 +41,10 @@ export function getSessionModelsFilePath() {
   return path.join(getAppDataDir(), 'session-models.json');
 }
 
+export function getPricesFilePath() {
+  return path.join(getAppDataDir(), 'prices.json');
+}
+
 export function loadSessionModelsMap() {
   try {
     const p = getSessionModelsFilePath();
@@ -93,6 +97,7 @@ function defaultConfig() {
     antigravityExePath: path.join(localAppData, 'Programs', 'antigravity', 'Antigravity.exe'),
     targetAntigravityVersion: '2.34.0',
     quotaRefreshIntervalSec: 300,
+    metricsEnabled: true,
     assistantSessionId: '',
     personaPath: repoPersona,
     schedules: {

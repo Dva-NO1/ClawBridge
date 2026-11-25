@@ -231,6 +231,8 @@ export class SessionService extends EventEmitter {
 
     // Full transcript line cache for truncated diff/content lookups: `${sessionId}:${lineIdx}` -> parsedStep
     this.fullLineCache = new Map();
+    // Whole-file line array cache for transcript_full.jsonl keyed by path -> { mtimeMs, size, lines }
+    this.fullFileLinesCache = new Map();
 
     this.cdpStatus = { available: false, browser: null, note: '' };
   }
@@ -716,14 +718,26 @@ export class SessionService extends EventEmitter {
   }
 
   _readFullStepLine(sessionId, fullPath, zeroBasedLineIdx) {
-    const cacheKey = `${sessionId}:${zeroBasedLineIdx}`;
-    if (this.fullLineCache.has(cacheKey)) {
-      return this.fullLineCache.get(cacheKey);
-    }
     try {
       if (!fs.existsSync(fullPath)) return null;
-      const lines = fs.readFileSync(fullPath, 'utf-8').split(/\r?\n/);
-      const raw = lines[zeroBasedLineIdx];
+      const st = fs.statSync(fullPath);
+      const sig = `${st.mtimeMs}:${st.size}`;
+      const cacheKey = `${sessionId}:${sig}:${zeroBasedLineIdx}`;
+      if (this.fullLineCache.has(cacheKey)) {
+        return this.fullLineCache.get(cacheKey);
+      }
+
+      let fileEntry = this.fullFileLinesCache.get(fullPath);
+      if (!fileEntry || fileEntry.mtimeMs !== st.mtimeMs || fileEntry.size !== st.size) {
+        const lines = fs.readFileSync(fullPath, 'utf-8').split(/\r?\n/);
+        if (this.fullFileLinesCache.size >= 4) {
+          this.fullFileLinesCache.clear();
+        }
+        fileEntry = { mtimeMs: st.mtimeMs, size: st.size, lines };
+        this.fullFileLinesCache.set(fullPath, fileEntry);
+      }
+
+      const raw = fileEntry.lines[zeroBasedLineIdx];
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       if (this.fullLineCache.size > 400) {

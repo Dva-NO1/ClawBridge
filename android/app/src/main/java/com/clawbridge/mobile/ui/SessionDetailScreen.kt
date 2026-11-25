@@ -6,6 +6,11 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -109,6 +114,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -129,6 +135,7 @@ import com.clawbridge.mobile.data.DownloadStatusState
 import com.clawbridge.mobile.data.ModelOptionUi
 import com.clawbridge.mobile.data.PendingApprovalUi
 import com.clawbridge.mobile.data.SessionDetailState
+import com.clawbridge.mobile.data.SessionMetricsState
 import com.clawbridge.mobile.data.SettingsStore
 import com.clawbridge.mobile.data.StagedAttachmentUi
 import com.clawbridge.mobile.data.SubagentUi
@@ -147,6 +154,8 @@ import java.util.Locale
 @Composable
 fun SessionDetailScreen(
     detail: SessionDetailState,
+    metrics: SessionMetricsState? = null,
+    initialMetricsExpanded: Boolean = false,
     appSettings: AppSettings,
     settingsStore: SettingsStore?,
     desktopOnline: Boolean,
@@ -382,7 +391,14 @@ fun SessionDetailScreen(
                                 SessionStatusDot(detail.session.status)
                                 Spacer(Modifier.width(5.dp))
                                 Text(
-                                    text = "${statusLabel(detail.session.status)} · ${detail.session.project}",
+                                    text = buildString {
+                                        append(statusLabel(detail.session.status))
+                                        append(" · ")
+                                        append(detail.session.project)
+                                        if (detail.syncing && detail.messages.isNotEmpty()) {
+                                            append(" · 同步中")
+                                        }
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = ClawColors.TextMuted,
                                     maxLines = 1,
@@ -393,7 +409,15 @@ fun SessionDetailScreen(
                     },
                     actions = {
                         IconButton(onClick = onRefresh) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = "刷新会话")
+                            if (detail.syncing && detail.messages.isNotEmpty()) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 1.8.dp,
+                                    color = ClawColors.TextSecondary
+                                )
+                            } else {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "刷新会话")
+                            }
                         }
                     }
                 )
@@ -675,11 +699,20 @@ fun SessionDetailScreen(
             }
 
             if (detail.loading && detail.messages.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
                     CircularProgressIndicator(color = ClawColors.Primary, strokeWidth = 2.dp)
                 }
             } else {
-                Box(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                ) {
                     when (subTab) {
                         0 -> MessageStreamList(
                             messages = detail.messages,
@@ -725,7 +758,331 @@ fun SessionDetailScreen(
                     }
                 }
             }
+
+            // Real-time Speed, Token Usage & Cost Estimation Bar (hidden cleanly if unavailable/disabled)
+            val validMetrics = metrics?.takeIf {
+                it.sessionId.isBlank() || it.sessionId == detail.session.id
+            }
+            if (validMetrics != null && validMetrics.hasDisplayableMetrics()) {
+                var metricsExpanded by rememberSaveable(detail.session.id) {
+                    mutableStateOf(initialMetricsExpanded)
+                }
+                SessionMetricsBar(
+                    metrics = validMetrics,
+                    expanded = metricsExpanded,
+                    onToggleExpand = { metricsExpanded = !metricsExpanded }
+                )
+            }
         }
+    }
+}
+
+@Composable
+internal fun SessionMetricsBar(
+    metrics: SessionMetricsState,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+) {
+    val isGenerating = metrics.state == "generating"
+    val borderColor = if (isGenerating) ClawColors.AccentBorder else ClawColors.Border
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("session_metrics_bar")
+            .background(ClawColors.Surface)
+    ) {
+        HorizontalDivider(color = borderColor, thickness = 1.dp)
+
+        // Primary compact header row (always visible, tap to expand/collapse)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("session_metrics_toggle")
+                .clickable(onClick = onToggleExpand)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Left: Live status dot + Hero Decode TPS
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(if (isGenerating) ClawColors.Accent else ClawColors.TextMuted)
+                )
+                Spacer(Modifier.width(6.dp))
+                val heroSpeedText = when {
+                    metrics.decodeTps != null -> {
+                        val prefix = if (metrics.decodeTpsEstimated) "≈" else ""
+                        "$prefix${formatTpsValue(metrics.decodeTps)} t/s"
+                    }
+                    isGenerating -> "生成中..."
+                    metrics.e2eTps != null -> {
+                        val prefix = if (metrics.e2eTpsEstimated) "≈" else ""
+                        "E2E $prefix${formatTpsValue(metrics.e2eTps)} t/s"
+                    }
+                    else -> "统计"
+                }
+                Text(
+                    text = heroSpeedText,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.5.sp,
+                    ),
+                    color = if (isGenerating) ClawColors.Accent else ClawColors.TextPrimary,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            // Right: Current reply output tokens + current reply estimated cost + chevron
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (metrics.outputTokens > 0L || isGenerating) {
+                    val tokPrefix = if (metrics.outputTokensEstimated) "≈" else ""
+                    Text(
+                        text = "$tokPrefix${formatCompactTokens(metrics.outputTokens)} tok",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.5.sp,
+                        ),
+                        color = ClawColors.TextPrimary,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+
+                val replyCost = metrics.estCostReply
+                if (replyCost != null && (replyCost > 0.0 || metrics.outputTokens > 0L)) {
+                    val costPrefix = if (metrics.costEstimated) "≈" else ""
+                    Text(
+                        text = "预估 $costPrefix${formatUsdShort(replyCost)}",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.5.sp,
+                        ),
+                        color = ClawColors.TextSecondary,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+
+                Icon(
+                    imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ExpandLess,
+                    contentDescription = if (expanded) "收起指标详情" else "展开指标详情",
+                    tint = ClawColors.TextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        // Expandable secondary metrics drawer
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("session_metrics_drawer")
+                    .background(ClawColors.Canvas)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Row 1: TTFT | E2E TPS | Cache Hit % (only when present)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    val ttftText = metrics.ttftMs?.let { ms ->
+                        val prefix = if (metrics.ttftEstimated) "≈" else ""
+                        "$prefix${formatLatencyMs(ms)}"
+                    } ?: "--"
+                    MetricsMiniCell(
+                        label = "首字延迟 TTFT",
+                        value = ttftText,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    val e2eText = metrics.e2eTps?.let { tps ->
+                        val prefix = if (metrics.e2eTpsEstimated) "≈" else ""
+                        "$prefix${formatTpsValue(tps)} t/s"
+                    } ?: "--"
+                    MetricsMiniCell(
+                        label = "端到端 TPS",
+                        value = e2eText,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    if (metrics.cacheHitPct != null) {
+                        MetricsMiniCell(
+                            label = "缓存命中",
+                            value = String.format(Locale.US, "%.1f%%", metrics.cacheHitPct),
+                            valueColor = ClawColors.Accent,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // Row 2: Context usage progress bar (only when contextPct is present)
+                val ctxPct = metrics.contextPct
+                if (ctxPct != null) {
+                    val clampedPct = ctxPct.coerceIn(0.0, 100.0)
+                    val barColor = when {
+                        clampedPct >= 85.0 -> ClawColors.Error
+                        clampedPct >= 60.0 -> ClawColors.Warning
+                        else -> ClawColors.Accent
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "上下文用量",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ClawColors.TextSecondary,
+                            )
+                            val ctxDetail = if (metrics.contextUsed != null && metrics.contextMax != null && metrics.contextMax > 0L) {
+                                "${formatCompactTokens(metrics.contextUsed)} / ${formatCompactTokens(metrics.contextMax)} · ${String.format(Locale.US, "%.1f%%", clampedPct)}"
+                            } else {
+                                String.format(Locale.US, "%.1f%%", clampedPct)
+                            }
+                            Text(
+                                text = ctxDetail,
+                                style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+                                color = ClawColors.TextPrimary,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        }
+                        LinearProgressIndicator(
+                            progress = { (clampedPct / 100.0).toFloat() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp)),
+                            color = barColor,
+                            trackColor = ClawColors.SurfaceElevated,
+                        )
+                    }
+                }
+
+                // Row 3: Session cumulative estimated cost + public API pricing disclaimer
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val sessCostText = metrics.estCostSession?.let { formatUsdShort(it) } ?: "--"
+                    Text(
+                        text = "本会话累计预估 $sessCostText",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = ClawColors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (metrics.priceDefaulted) "按公开 API 单价估算(默认)" else "按公开 API 单价估算",
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                        color = ClawColors.TextMuted,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricsMiniCell(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = ClawColors.TextPrimary,
+) {
+    Surface(
+        color = ClawColors.Surface,
+        shape = RoundedCornerShape(8.dp),
+        border = ClawDimens.HairlineBorder,
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = ClawColors.TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                ),
+                color = valueColor,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+internal fun formatTpsValue(tps: Double): String {
+    return if (tps >= 100.0) String.format(Locale.US, "%.0f", tps)
+    else String.format(Locale.US, "%.1f", tps)
+}
+
+internal fun formatCompactTokens(tokens: Long): String {
+    val v = tokens.coerceAtLeast(0L)
+    return when {
+        v >= 1_000_000L -> String.format(Locale.US, "%.2fM", v / 1_000_000.0)
+        v >= 1_000L -> String.format(Locale.US, "%.1fk", v / 1_000.0)
+        else -> v.toString()
+    }
+}
+
+internal fun formatLatencyMs(ms: Long): String {
+    val v = ms.coerceAtLeast(0L)
+    return when {
+        v >= 10_000L -> String.format(Locale.US, "%.1fs", v / 1000.0)
+        v >= 1_000L -> String.format(Locale.US, "%.2fs", v / 1000.0)
+        else -> "${v}ms"
+    }
+}
+
+internal fun formatUsdShort(usd: Double): String {
+    val v = usd.coerceAtLeast(0.0)
+    return when {
+        v >= 1.0 -> String.format(Locale.US, "$%.2f", v)
+        v >= 0.01 -> String.format(Locale.US, "$%.3f", v)
+        v > 0.0 -> String.format(Locale.US, "$%.4f", v)
+        else -> "$0.00"
     }
 }
 

@@ -2,7 +2,7 @@
 node_modules/
 npm-debug.log*
 relay/data/
-data/
+/data/
 logs/
 *.log
 
@@ -12,6 +12,7 @@ logs/
 !.env.example
 bridge/config.json
 config.json
+**/prices.json
 **/runtime-status.json
 **/pairing-code.json
 **/quota-cache.json

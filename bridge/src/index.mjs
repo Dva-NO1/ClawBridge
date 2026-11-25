@@ -30,6 +30,7 @@ import { inspectAntigravityVersion } from './antigravity-inspector.mjs';
 import { PowerMonitor } from './power-monitor.mjs';
 import { RelayClient } from './relay-client.mjs';
 import { GoogleQuotaService } from './google-quota.mjs';
+import { MetricsService } from './metrics-service.mjs';
 import { CodexAppServerClient } from './codex-client.mjs';
 import { SessionService } from './session-service.mjs';
 import { NotificationEngine } from './notification-engine.mjs';
@@ -104,6 +105,13 @@ async function main() {
   });
   sessionService.start();
 
+  const metricsService = new MetricsService({
+    sessionService,
+    codexClient,
+    enabled: config.metricsEnabled !== false,
+  });
+  metricsService.start();
+
   codexClient.on('activity', () => {
     codexClient.refreshThreadsAndLimits().catch(() => {});
   });
@@ -159,6 +167,12 @@ async function main() {
     }
   });
 
+  metricsService.on('updated', (metricsSnap) => {
+    if (relay.peerOnline) {
+      relay.sendEnvelope('metrics.data', metricsSnap);
+    }
+  });
+
   notificationEngine.on('notified', () => {
     if (relay.peerOnline) {
       relay.sendEnvelope('approval.list', {
@@ -199,6 +213,7 @@ async function main() {
       pushInitialStateToPhone();
     } else {
       sessionService.unsubscribeSession();
+      metricsService.clearSubscription();
       codexClient.releaseThreadWriter('', 'phone_offline').catch(() => {});
     }
   });
@@ -220,6 +235,7 @@ async function main() {
       String(modelId || '').trim() || getSessionModelChoice(source, sessionId)?.modelId || '';
 
     try {
+      metricsService.onUserSend({ sessionId, source, ts: Date.now() });
       let codexResult = null;
       if (source === 'codex') {
         codexResult = await codexClient.sendMessageToThread(sessionId, cleanText, { modelSpec: effectiveModelId });
@@ -251,6 +267,7 @@ async function main() {
         sessionService._pollSubscribedSession().catch(() => {});
       }
     } catch (err) {
+      metricsService.onUserSendFailed({ sessionId });
       const fullErr = err?.rawError || err?.message || String(err);
       const userErr = err?.userMessage || err?.message || '发送失败';
       logger.error(
@@ -339,6 +356,7 @@ async function main() {
           relay.sendEnvelope('approval.list', {
             approvals: notificationEngine.getPendingApprovalsList(),
           });
+          metricsService.setSubscription(sessionId, source).catch(() => {});
           break;
         }
         case 'model.list.get': {
@@ -390,6 +408,7 @@ async function main() {
         case 'session.close': {
           const prevSub = sessionService.subscription;
           sessionService.unsubscribeSession();
+          metricsService.clearSubscription();
           if (prevSub && prevSub.source === 'codex' && prevSub.sessionId) {
             codexClient.releaseThreadWriter(prevSub.sessionId, 'session_close').catch(() => {});
           }
@@ -438,6 +457,13 @@ async function main() {
           const forceRefresh = Boolean(payload?.force);
           const snap = await buildCombinedQuotaPayload({ forceRefresh });
           relay.sendEnvelope('quota.data', snap, reqId);
+          break;
+        }
+        case 'metrics.get': {
+          const sessionId = String(payload?.sessionId || sessionService.subscription?.sessionId || '').trim();
+          const source = String(payload?.source || sessionService.subscription?.source || 'antigravity').trim();
+          const snap = await metricsService.getMetricsSnapshot({ sessionId, source });
+          relay.sendEnvelope('metrics.data', snap, reqId);
           break;
         }
         case 'artifact.get': {
@@ -546,6 +572,7 @@ async function main() {
               /\.(png|jpg|jpeg|webp|gif)$/i.test(savedPath);
 
             if (deliverToChat && sessionId) {
+              metricsService.onUserSend({ sessionId, source, ts: Date.now() });
               if (source === 'codex') {
                 const textForCodex = isImage
                   ? promptText || `请查看我从手机发送的图片（已同步保存于 ${savedPath}）。`
@@ -639,6 +666,7 @@ async function main() {
     clearInterval(codexRefreshTimer);
     try { ipcServer.close(); } catch { /* ignore */ }
     notificationEngine.stop();
+    metricsService.stop();
     quotaService.stop();
     sessionService.stop();
     codexClient.stop();

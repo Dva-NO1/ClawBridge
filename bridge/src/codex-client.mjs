@@ -94,6 +94,8 @@ export class CodexAppServerClient extends EventEmitter {
     this.continuationForks = new Map();
     // Live streaming assistant reply buffers: threadId -> { text, streaming, ts }
     this.liveStreams = new Map();
+    // Latest real token usage reported by `thread/tokenUsage/updated`: threadId -> { turnId, last, total, modelContextWindow, ts }
+    this.latestTokenUsage = new Map();
     this.recentStderr = [];
     this.readyPromise = null;
     this._resolveReady = null;
@@ -256,7 +258,7 @@ export class CodexAppServerClient extends EventEmitter {
       {
         clientInfo: {
           name: 'clawbridge-desktop',
-          version: '1.7.1',
+          version: '1.1.0',
         },
       },
       8000
@@ -395,26 +397,59 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   _handleNotification(method, params) {
+    const now = Date.now();
     const tid = params?.threadId || params?.turn?.threadId || '';
     if (method === 'turn/started' && tid) {
+      const turnId = params?.turn?.id || params?.turnId || 'active';
       this._clearIdleTimer(tid);
-      this.activeTurns.set(tid, params?.turn?.id || params?.turnId || 'active');
-      this.liveStreams.set(tid, { text: '', streaming: true, ts: Date.now() });
+      this.activeTurns.set(tid, turnId);
+      this.liveStreams.set(tid, { text: '', streaming: true, ts: now });
+      this.emit('turnLifecycle', { threadId: tid, turnId, phase: 'started', ts: now });
     } else if (method === 'item/agentMessage/delta' && tid && typeof params?.delta === 'string') {
-      const cur = this.liveStreams.get(tid) || { text: '', streaming: true, ts: Date.now() };
+      const cur = this.liveStreams.get(tid) || { text: '', streaming: true, ts: now };
       cur.text += params.delta;
       cur.streaming = true;
-      cur.ts = Date.now();
+      cur.ts = now;
       this.liveStreams.set(tid, cur);
+      this.emit('streamDelta', {
+        threadId: tid,
+        turnId: params?.turnId || this.activeTurns.get(tid) || '',
+        kind: 'agent',
+        delta: params.delta,
+        ts: now,
+      });
+    } else if (
+      (method === 'item/reasoning/textDelta' || method === 'item/reasoning/summaryTextDelta') &&
+      tid &&
+      typeof params?.delta === 'string'
+    ) {
+      this.emit('streamDelta', {
+        threadId: tid,
+        turnId: params?.turnId || this.activeTurns.get(tid) || '',
+        kind: 'reasoning',
+        delta: params.delta,
+        ts: now,
+      });
+    } else if (method === 'thread/tokenUsage/updated' && tid && params?.tokenUsage) {
+      const entry = {
+        threadId: tid,
+        turnId: params?.turnId || this.activeTurns.get(tid) || '',
+        tokenUsage: params.tokenUsage,
+        ts: now,
+      };
+      this.latestTokenUsage.set(tid, entry);
+      this.emit('tokenUsage', entry);
     } else if (method === 'item/completed' && tid && params?.item?.type === 'agentMessage' && params?.item?.text) {
-      this.liveStreams.set(tid, { text: String(params.item.text), streaming: false, ts: Date.now() });
+      this.liveStreams.set(tid, { text: String(params.item.text), streaming: false, ts: now });
     } else if (method === 'turn/completed' && tid) {
+      const turnId = params?.turn?.id || params?.turnId || this.activeTurns.get(tid) || '';
       this.activeTurns.delete(tid);
       const cur = this.liveStreams.get(tid);
       if (cur) {
         cur.streaming = false;
-        cur.ts = Date.now();
+        cur.ts = now;
       }
+      this.emit('turnLifecycle', { threadId: tid, turnId, phase: 'completed', ts: now });
       this._scheduleIdleRelease(tid, 'turn_completed');
     } else if (method === 'thread/closed' && tid) {
       this.loadedThreads.delete(tid);

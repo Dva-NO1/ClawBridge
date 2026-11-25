@@ -141,6 +141,7 @@ fun ClawBridgeMainApp(
     val quotaState by monitorRepository.quota.collectAsState()
     val sessions by monitorRepository.sessions.collectAsState()
     val activeDetail by monitorRepository.activeDetail.collectAsState()
+    val activeMetrics by monitorRepository.activeMetrics.collectAsState()
     val previewState by monitorRepository.preview.collectAsState()
     val downloadStatus by monitorRepository.downloadStatus.collectAsState()
     val uploadStatus by monitorRepository.uploadStatus.collectAsState()
@@ -195,6 +196,7 @@ fun ClawBridgeMainApp(
         }
         SessionDetailScreen(
             detail = detail,
+            metrics = activeMetrics,
             appSettings = appSettings,
             settingsStore = settingsStore,
             desktopOnline = desktopOnline,

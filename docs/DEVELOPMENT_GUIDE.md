@@ -45,6 +45,12 @@
   - 桥端实现单线程串行 writer 复用、空闲/切换/断线自动释放 OS 锁（防泄漏）；当遇到外部桌面端独占锁定时，自动调用官方 `thread/fork` 无损继承上下文续接并在原会话流无缝合并回复。
 - **直觉式剩余额度条 (`v1.7.3`)**：将配额进度条重做为电池/油表式绿色剩余额度条，一眼看清剩余可用比例。
 
+### v1.1.0（开源版更新）：实时输出速度与花费预估面板 + 会话秒开缓存
+- **实时指标采集引擎 (`bridge/src/metrics-service.mjs`)**：仅针对 App 当前订阅会话采集，生成中最多 `1Hz` 节流推送，状态切换与 `metrics.get` 立即补帧；支持在 `%APPDATA%\clawbridge\config.json` 通过 `"metricsEnabled": false` 关闭。
+- **双端数据源与诚实口径**：Antigravity 复用 Hub ConnectRPC `GetCascadeTrajectoryGeneratorMetadata`（毫秒级精确 TTFT/TPS/token/缓存/上下文）+ `transcript.jsonl` 兜底 + 可选 CDP 3 秒滑动窗口估算（标 `≈`）；Codex 接入 `app-server` 的 `thread/tokenUsage/updated`、`item/reasoning/*Delta` 与 rollout 精确 usage。
+- **外部化可编辑单价表 (`%APPDATA%\clawbridge\prices.json`)**：首次启动自动生成，支持自行增改并热加载，JSON 损坏安全回退默认单价。
+- **会话秒开双层缓存 (`SessionDetailCache.kt` + 桥端 `transcript_full.jsonl` 整文件缓存)**：修复点击历史对话等待加载慢的问题，L1 内存 LRU + L2 磁盘缓存实现 0ms 秒开、后台静默同步最新消息。
+
 ---
 
 ## 2. 协议帧规范速览 (Protocol v1)
@@ -66,6 +72,7 @@
 | 鉴权与配对 | `hello` / `hello.ack` / `pair.code.create` / `pair.request` / `pair.result` | 双端 ↔ 中继 | 设备身份校验与 6 位一次性配对 |
 | 心跳与在线 | `ping` / `pong` / `presence` | 双端 ↔ 中继 | 30s 探活与对端在线状态同步 |
 | 配额与模型 | `quota.get` / `quota.data` / `model.list.get` / `session.model.set` | App ↔ Bridge | 双端配额与任务模型切换 |
+| 实时指标 | `metrics.get` / `metrics.data` | App ↔ Bridge | 订阅会话速度、TTFT、token、上下文与预估花费（1Hz 节流） |
 | 会话与对话 | `session.list.get` / `session.open` / `session.stream` / `chat.send` / `chat.ack` | App ↔ Bridge | 会话镜像、实时流与消息投递 |
 | 审批与通知 | `event.notify` / `approval.pending` / `approval.respond` / `approval.ack` | App ↔ Bridge | 分级推送与高风险 PIN 校验 |
 | 文件与产物 | `artifact.get` / `file.download` / `artifact.chunk` / `upload.chunk` / `upload.complete` | App ↔ Bridge | 双向分片文件与图片传输 |

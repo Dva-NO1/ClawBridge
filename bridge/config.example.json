@@ -8,6 +8,7 @@
   "antigravityExePath": "%LOCALAPPDATA%\\Programs\\antigravity\\Antigravity.exe",
   "targetAntigravityVersion": "2.34.0",
   "quotaRefreshIntervalSec": 300,
+  "metricsEnabled": true,
   "assistantSessionId": "",
   "personaPath": "./persona.md",
   "schedules": {

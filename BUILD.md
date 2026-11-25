@@ -56,15 +56,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\build-deskt
 ```
 成功后会在 `bridge\ClawBridgeDesktop.exe` 生成原生托盘宿主程序（内置 `clawbridge.ico` 图标，后台拉起 `node.exe` 且无控制台黑窗）。
 
-### 打包独立 Windows 一键安装程序 (`ClawBridge-v1.0.0-windows-setup.exe`)
+### 打包独立 Windows 一键安装程序 (`ClawBridge-v1.1.0-windows-setup.exe`)
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\build-windows-setup.ps1 -Version "1.0.0"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\build-windows-setup.ps1 -Version "1.1.0"
 ```
-成功后会在 `dist\ClawBridge-v1.0.0-windows-setup.exe` 生成独立单文件安装包（内嵌 `ClawBridgeDesktop.exe`、`bridge\src\*.mjs`、生产 `node_modules` 与图标），仅依赖 Windows 自带 `.NET Framework 4.x`，无需安装 NSIS / Inno Setup 等额外打包工具。
+成功后会在 `dist\ClawBridge-v1.1.0-windows-setup.exe` 生成独立单文件安装包（内嵌 `ClawBridgeDesktop.exe`、`bridge\src\*.mjs`、生产 `node_modules` 与图标），仅依赖 Windows 自带 `.NET Framework 4.x`，无需安装 NSIS / Inno Setup 等额外打包工具。
 可用无头模式验证解压完整性：
 ```powershell
-.\dist\ClawBridge-v1.0.0-windows-setup.exe --extract-only "$env:TEMP\clawbridge-verify"
+.\dist\ClawBridge-v1.1.0-windows-setup.exe --extract-only "$env:TEMP\clawbridge-verify"
 ```
 
 ### 注册开机自启计划任务（一键安装）

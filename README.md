@@ -16,8 +16,8 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`）**、**Windows
 
 | 平台 | 安装包文件 | 说明 |
 | :--- | :--- | :--- |
-| **Android 手机端** | `ClawBridge-v1.0.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+） |
-| **Windows 电脑端** | `ClawBridge-v1.0.0-windows-setup.exe` | 一键图形安装程序，内置 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
+| **Android 手机端** | `ClawBridge-v1.1.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持从 `v1.0.0` 直接覆盖升级） |
+| **Windows 电脑端** | `ClawBridge-v1.1.0-windows-setup.exe` | 一键图形安装程序，内置 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
 | **校验文件** | `SHA256SUMS.txt` | 官方发布的 SHA-256 哈希校验清单 |
 
 > **提示**：开源版不包含任何公共中继服务器。安装好手机 APK 与电脑 EXE 后，仍需按下方第 1 步在自己的 VPS 上一键部署中继，并在两端填入你自己的 `wss://relay.yourdomain.com`。
@@ -29,7 +29,8 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`）**、**Windows
 - **零 VPN 公网直连**：基于自有 VPS 上的轻量 WSS（TLS 1.2/1.3）中继，手机与桌面桥均主动外连，支持 DoH 防劫持、30 秒心跳保活、断线指数退避与 Windows 休眠唤醒自恢复。
 - **双引擎统一接入**：同时管理桌面端 **Antigravity**（Hub ConnectRPC + Transcript 实时镜像 + 可选 CDP 9222 兜底）与 **Codex CLI**（`codex app-server` JSON-RPC 2.0 + 无损 `thread/fork` 自动续接）。
 - **双客户端独立配额看板**：直观的绿色「剩余额度条」，独立区分 **Codex (OpenAI) 5h / 7d 额度** 与 **Antigravity Gemini / 附赠 Claude 5h / 7d 额度**，附重置倒计时与免费重置券显示。
-- **高效会话列表与阅读记忆**：顶部即时搜索（标题/项目/模型/预览/ID）、`时间 | 项目` 双视图切换、来源 + 状态双维筛选、置顶会话、上次阅读位置记忆与长列表流畅滚动。
+- **高效会话列表、秒开双层缓存与阅读记忆**：顶部即时搜索（标题/项目/模型/预览/ID）、`时间 | 项目` 双视图切换、来源 + 状态双维筛选、置顶会话、上次阅读位置记忆；内置内存 + 磁盘双层会话缓存，点击历史对话秒开并后台静默同步最新消息。
+- **实时输出速度与花费预估面板（v1.1.0 新增）**：对话页底部新增可折叠实时指标栏，支持 Antigravity 与 Codex 双端实时展示解码 TPS、TTFT 首字延迟、端到端 TPS、本次输出 token、上下文用量进度条、缓存命中率与按公开 API 单价折算的预估花费（诚实区分精确值与 `≈` 估算值）；单价表放 `%APPDATA%\clawbridge\prices.json` 支持自行增改与热加载，可在 `config.json` 用 `"metricsEnabled": false` 关闭。
 - **手机端任务换模型与双向传文件**：会话内实时切换 Antigravity / Codex 模型；支持手机发图片（多模态直传）与传文件到电脑工作区，聊天内出现的文件/安装包路径自动生成一键下载按钮。
 - **分级审批与安全保护**：低风险命令可在锁屏通知一键批准；高风险命令（删除/格式化/安装/脚本执行等）由桌面桥硬编码拦截，强制在 App 内通过 **4–6 位安全 PIN** 校验后方可放行。
 - **无感静默托盘**：Windows 端编译为零黑窗托盘程序 `ClawBridgeDesktop.exe`，开机自启，点击托盘图标或按 `Ctrl+Alt+C` 随时呼出控制台。
@@ -131,7 +132,7 @@ curl https://relay.yourdomain.com/healthz
 
 **前置条件**：Windows 10/11、Node.js ≥ 22、本地已安装 Antigravity 和/或 Codex CLI。
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.1.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
 - **方式 B（从源码安装）**：在 PowerShell 进入仓库根目录执行一键安装脚本（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
@@ -148,7 +149,7 @@ curl https://relay.yourdomain.com/healthz
 
 ### 第 3 步：安装 Android App
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-android.apk` 并直接安装到手机。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.1.0-android.apk` 并直接安装到手机。
 - **方式 B（从源码自行构建）**：详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
 
 ```bash
