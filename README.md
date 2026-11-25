@@ -10,6 +10,20 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`）**、**Windows
 
 ---
 
+## 快速下载（推荐，免编译）
+
+如果你只想直接使用而不需要从源码编译，可以直接前往 **[GitHub Releases](https://github.com/xiaojiangxiaojin-prog/ClawBridge/releases/latest)** 下载对应安装包：
+
+| 平台 | 安装包文件 | 说明 |
+| :--- | :--- | :--- |
+| **Android 手机端** | `ClawBridge-v1.0.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+） |
+| **Windows 电脑端** | `ClawBridge-v1.0.0-windows-setup.exe` | 一键图形安装程序，内置 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
+| **校验文件** | `SHA256SUMS.txt` | 官方发布的 SHA-256 哈希校验清单 |
+
+> **提示**：开源版不包含任何公共中继服务器。安装好手机 APK 与电脑 EXE 后，仍需按下方第 1 步在自己的 VPS 上一键部署中继，并在两端填入你自己的 `wss://relay.yourdomain.com`。
+
+---
+
 ## 核心功能
 
 - **零 VPN 公网直连**：基于自有 VPS 上的轻量 WSS（TLS 1.2/1.3）中继，手机与桌面桥均主动外连，支持 DoH 防劫持、30 秒心跳保活、断线指数退避与 Windows 休眠唤醒自恢复。
@@ -59,8 +73,8 @@ ClawBridge-OSS/
 │   └── .env.example
 ├── bridge/                       # Windows 桌面桥与静默托盘控制台
 │   ├── src/                      # 15 个核心桥模块 + selftest-loopback.mjs
-│   ├── desktop-gui/              # C# WPF 零黑窗托盘控制台源码
-│   ├── scripts/                  # 安装自启 / 编译托盘 / 启动 CDP 脚本
+│   ├── desktop-gui/              # C# WPF 托盘控制台 + Windows 安装程序源码
+│   ├── scripts/                  # 安装自启 / 编译托盘 / 打包 setup.exe / 启动 CDP 脚本
 │   └── config.example.json
 ├── android/                      # Android 客户端 (Kotlin + Jetpack Compose)
 │   ├── app/src/main/             # 客户端源码
@@ -117,23 +131,25 @@ curl https://relay.yourdomain.com/healthz
 
 **前置条件**：Windows 10/11、Node.js ≥ 22、本地已安装 Antigravity 和/或 Codex CLI。
 
-1. 在 PowerShell 进入仓库根目录执行一键安装（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/xiaojiangxiaojin-prog/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
+- **方式 B（从源码安装）**：在 PowerShell 进入仓库根目录执行一键安装脚本（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
    ```
 2. **首次配置你的中继地址**（二选一）：
-   - **图形界面**：启动 `bridge\ClawBridgeDesktop.exe`（或点击系统托盘图标），在「中继服务器地址」填入 `wss://relay.yourdomain.com` → 点击 **「保存并应用」**；
+   - **图形界面**：启动桌面快捷方式 `ClawBridge 桌面控制台`（或点击系统托盘图标），在「中继服务器地址」填入 `wss://relay.yourdomain.com` → 点击 **「保存并应用」**；
    - **手动编辑**：参考 [bridge/config.example.json](./bridge/config.example.json) 编辑 `%APPDATA%\clawbridge\config.json`，将 `relayUrl` 改为 `wss://relay.yourdomain.com` 后重启桥服务。
-3. 命令行查看运行状态与当前 6 位配对码：
+3. 命令行查看运行状态与当前 6 位配对码（源码安装方式）：
    ```powershell
    node --no-warnings .\bridge\src\index.mjs --show-pair-code
    ```
 
 ---
 
-### 第 3 步：构建并安装 Android App
+### 第 3 步：安装 Android App
 
-详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/xiaojiangxiaojin-prog/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-android.apk` 并直接安装到手机。
+- **方式 B（从源码自行构建）**：详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
 
 ```bash
 cd android

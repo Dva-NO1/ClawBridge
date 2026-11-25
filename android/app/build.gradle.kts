@@ -17,8 +17,8 @@ android {
         applicationId = "com.clawbridge.mobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.7.3"
+        versionCode = 1
+        versionName = "1.0.0"
     }
 
     signingConfigs {
@@ -37,7 +37,10 @@ android {
             val storePwd = readOpt("AGM_RELEASE_STORE_PASSWORD")
             val alias = readOpt("AGM_RELEASE_KEY_ALIAS")
             val keyPwd = readOpt("AGM_RELEASE_KEY_PASSWORD")
-            val resolved = storeFilePath?.let { File(rootProject.projectDir, it) }
+            val resolved = storeFilePath?.let {
+                val f = File(it)
+                if (f.isAbsolute) f else File(rootProject.projectDir, it)
+            }
 
             if (resolved != null && resolved.exists() && storePwd != null && alias != null && keyPwd != null) {
                 storeFile = resolved

@@ -6,10 +6,11 @@ plugins {
     alias(libs.plugins.kotlin.serialization) apply false
 }
 
-val fastBuildRoot = file("F:/AndroidToolchain/build-out")
-if (fastBuildRoot.parentFile.exists()) {
-    layout.buildDirectory.set(File(fastBuildRoot, "root"))
+// Optional custom build output directory (useful on Windows when repo path contains non-ASCII characters)
+val customBuildRoot = System.getenv("CLAWBRIDGE_ANDROID_BUILD_DIR")?.takeIf { it.isNotBlank() }?.let { file(it) }
+if (customBuildRoot != null) {
+    layout.buildDirectory.set(File(customBuildRoot, "root"))
     subprojects {
-        layout.buildDirectory.set(File(fastBuildRoot, project.name))
+        layout.buildDirectory.set(File(customBuildRoot, project.name))
     }
 }

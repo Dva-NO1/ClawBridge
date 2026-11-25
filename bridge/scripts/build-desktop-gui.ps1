@@ -11,7 +11,7 @@ $WpfDir = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF"
 Stop-Process -Name "ClawBridgeDesktop" -Force -ErrorAction SilentlyContinue
 
 Write-Host "[1/2] Compiling native ClawBridgeDesktop.exe..."
-& $Csc /nologo /target:winexe /optimize+ `
+& $Csc /nologo /codepage:65001 /target:winexe /optimize+ `
   "/out:$OutExe" `
   "/win32icon:$IcoFile" `
   "/r:$WpfDir\PresentationCore.dll" `
