@@ -1,0 +1,17 @@
+{
+  "relayUrl": "wss://relay.example.com",
+  "deviceId": "",
+  "deviceToken": "",
+  "lastBoundRelayUrl": "",
+  "trustSelfSigned": false,
+  "cdpPort": 9222,
+  "antigravityExePath": "%LOCALAPPDATA%\\Programs\\antigravity\\Antigravity.exe",
+  "targetAntigravityVersion": "2.34.0",
+  "quotaRefreshIntervalSec": 300,
+  "assistantSessionId": "",
+  "personaPath": "./persona.md",
+  "schedules": {
+    "morning": "07:30",
+    "night": "23:00"
+  }
+}

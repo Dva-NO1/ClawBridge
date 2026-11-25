@@ -1,0 +1,5 @@
+<resources>
+    <!-- Pre-Compose window background aligned with ClawColors.Canvas -->
+    <color name="window_background">#141414</color>
+    <color name="ic_launcher_background">#141414</color>
+</resources>

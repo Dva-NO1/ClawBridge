@@ -1,0 +1,22 @@
+[Unit]
+Description=ClawBridge WSS Relay Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/clawbridge-relay
+EnvironmentFile=-/etc/clawbridge-relay/relay.env
+Environment=NODE_ENV=production
+Environment=RELAY_HOST=127.0.0.1
+Environment=RELAY_PORT=8787
+Environment=RELAY_STATE_FILE=/var/lib/clawbridge-relay/state.json
+ExecStart=/usr/bin/node /opt/clawbridge-relay/src/server.mjs
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

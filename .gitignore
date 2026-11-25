@@ -1,0 +1,52 @@
+# Node.js dependencies & runtime data
+node_modules/
+npm-debug.log*
+relay/data/
+data/
+logs/
+*.log
+
+# Real environment & local config files (keep *.example only)
+.env
+.env.*
+!.env.example
+bridge/config.json
+config.json
+**/runtime-status.json
+**/pairing-code.json
+**/quota-cache.json
+**/session-models.json
+**/ipc.token
+
+# Certificates, private keys & Android signing keystores
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+android/keystore/
+android/keystore.properties
+
+# Android build artifacts & local SDK paths
+android/local.properties
+android/.gradle/
+android/.idea/
+android/build/
+android/app/build/
+android/app/release/
+*.apk
+*.aab
+dist/
+
+# Desktop compiled binary & local uploads
+bridge/ClawBridgeDesktop.exe
+uploads/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/

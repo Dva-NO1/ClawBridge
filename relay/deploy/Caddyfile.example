@@ -1,0 +1,6 @@
+# Optional Caddyfile example (alternative to Nginx + Certbot)
+# Replace `relay.example.com` with your own domain pointing to your VPS IP.
+
+relay.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
