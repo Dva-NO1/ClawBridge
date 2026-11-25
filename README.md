@@ -12,7 +12,7 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`）**、**Windows
 
 ## 快速下载（推荐，免编译）
 
-如果你只想直接使用而不需要从源码编译，可以直接前往 **[GitHub Releases](https://github.com/xiaojiangxiaojin-prog/ClawBridge/releases/latest)** 下载对应安装包：
+如果你只想直接使用而不需要从源码编译，可以直接前往 **[GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest)** 下载对应安装包：
 
 | 平台 | 安装包文件 | 说明 |
 | :--- | :--- | :--- |
@@ -131,7 +131,7 @@ curl https://relay.yourdomain.com/healthz
 
 **前置条件**：Windows 10/11、Node.js ≥ 22、本地已安装 Antigravity 和/或 Codex CLI。
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/xiaojiangxiaojin-prog/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
 - **方式 B（从源码安装）**：在 PowerShell 进入仓库根目录执行一键安装脚本（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
@@ -148,7 +148,7 @@ curl https://relay.yourdomain.com/healthz
 
 ### 第 3 步：安装 Android App
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/xiaojiangxiaojin-prog/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-android.apk` 并直接安装到手机。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.0.0-android.apk` 并直接安装到手机。
 - **方式 B（从源码自行构建）**：详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
 
 ```bash
