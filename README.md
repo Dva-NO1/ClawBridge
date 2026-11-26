@@ -16,21 +16,23 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`，仅外网跨�
 
 | 平台 | 安装包文件 | 说明 |
 | :--- | :--- | :--- |
-| **Android 手机端** | `ClawBridge-v2.0.1-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持旧版本无缝覆盖升级） |
-| **Windows 电脑端** | `ClawBridge-v2.0.1-windows-setup.exe` | 一键图形安装程序，内置双模式 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
+| **Android 手机端** | `ClawBridge-v2.1.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持旧版本无缝覆盖升级） |
+| **Windows 电脑端** | `ClawBridge-v2.1.0-windows-setup.exe` | 一键图形安装程序，内置双通道默认同开 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
 | **校验文件** | `SHA256SUMS.txt` | 官方发布的 SHA-256 哈希校验清单 |
 
-> **提示**：**「内网直连」与「外网中继」两种模式均可完全单独使用，也可混合切换！**
-> - **纯内网使用（0 成本免服务器）**：只需 **1 台 Windows 电脑 + 1 部手机** 连同一 Wi-Fi，安装后在两端顶部大开关切至 **「内网直连」** 输入 6 位配对码即可使用全部功能；
-> - **跨网远程使用（免买域名，仅需 1 台 VPS）**：只需拥有 **1 台带公网 IPv4 的 VPS + 1 台电脑 + 1 部手机**，在 VPS 执行 `sudo bash deploy.sh` 自动生成自签加密直连地址 `wss://<VPS公网IP>:8443` 填入两端即可（无需买域名/无需配 DNS）。超详细手把手教程见 **[docs/DEVELOPMENT_GUIDE.md](./docs/DEVELOPMENT_GUIDE.md)**。
+> **提示**：**电脑端默认「内网 + 外网」双通道同时常开待命，仅需在手机端决定走哪路！两种模式也可完全单独使用：**
+> - **纯内网使用（0 成本免服务器）**：只需 **1 台 Windows 电脑 + 1 部手机** 连同一 Wi-Fi，电脑装好自动开启 `18791` 内网监听，手机顶部切至 **「⚡ 内网直连」** 输入 6 位内网配对码即可使用全部功能；
+> - **跨网远程使用（免买域名，仅需 1 台 VPS）**：只需拥有 **1 台带公网 IPv4 的 VPS + 1 台电脑 + 1 部手机**，在 VPS 执行 `sudo bash deploy.sh` 自动生成自签加密直连地址 `wss://<VPS公网IP>:8443` 填入两端即可（无需买域名/无需配 DNS）。
+> - **双通道无感漫游（v2.1.0 默认）**：电脑端同时监听内网 `18791/18792` 并连接外网 WSS 中继，完全无需在电脑上手动切换；在家手机点「内网直连」，出门手机点「外网中继」，电脑自动识别并原路回包。超详细手把手教程见 **[docs/DEVELOPMENT_GUIDE.md](./docs/DEVELOPMENT_GUIDE.md)**。
 
 ---
 
 ## 核心功能
 
-- **内网直连 / 外网中继双模式一键切换（v2.0.0 重磅新增）**：
+- **电脑端双通道默认常开 + 手机端一键切换（v2.1.0 升级）**：
+  - **电脑零切换**：Windows 桥启动即同时拉起 **内网直连监听（`ws://0.0.0.0:18791` + UDP `18792`）** 与 **外网 WSS 中继连接**，并排展示双通道状态卡片并高亮手机当前接入通道。
   - **内网直连（LAN Direct）**：手机与电脑同一 Wi-Fi 下通过 UDP `18792` 自动发现并直连 `ws://<LAN_IP>:18791`，1ms 局域网延迟，不经过任何外部服务器（断外网照常工作）；独立 6 位内网配对码签发 `lanToken` 存入 Android Keystore，支持记住上次 IP 快连与手动 IP 兜底。
-  - **外网中继（WAN Relay）**：基于自有 VPS 轻量 WSS（TLS 1.2/1.3）中继，支持 DoH 防劫持、30 秒心跳保活、断线指数退避与 Windows 休眠唤醒自恢复；内外网配对相互独立，切换模式不丢会话且无需重新配对。
+  - **外网中继（WAN Relay）**：基于自有 VPS 轻量 WSS（TLS 1.2/1.3，支持免域名公网 IPv4 直连与域名模式）中继，支持 DoH 防劫持、30 秒心跳保活、断线指数退避与 Windows 休眠唤醒自恢复；内外网配对相互独立，切换模式不丢会话且无需重新配对。
 - **双引擎统一接入与手机端新建 Project（v2.0.0 新增）**：同时管理桌面端 **Antigravity** 与 **Codex CLI**；支持在手机端直接自定义文件夹名在电脑创建新 Project（默认位于电脑桌面 `Desktop`，可在手机设置页随时修改默认工作区根目录）。
 - **一键黑夜/白天模式与六大板块自由取色（v2.0.0 新增）**：内置 10 套青春高颜值主题预设，支持顶栏一键切换黑夜/白天模式，并提供 2D HSV 画布取色器自定义全局背景、卡片、导航栏、主按钮、强调色与聊天气泡配色。
 - **会话任务结束通知与分级 PIN 安全审批**：每个会话任务执行完成自动推送最新回复摘要到手机通知栏（点击直达对话）；低风险命令支持通知栏快捷批准，高风险命令强制在 App 内通过 **4–6 位安全 PIN** 校验后放行（内外网双模式同等生效）。
@@ -140,14 +142,14 @@ curl -k https://127.0.0.1:8443/healthz
 
 **前置条件**：Windows 10/11、Node.js ≥ 22、本地已安装 Antigravity 和/或 Codex CLI。
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.1-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.1.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
 - **方式 B（从源码安装）**：在 PowerShell 进入仓库根目录执行一键安装脚本（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
    ```
-2. **选择你的使用模式（二选一或都配）**：
-   - **仅用内网直连**：点击控制台顶部 **「⚡ 内网直连 (LAN)」** 即可直接生成 6 位内网配对码（无需填中继地址）；
-   - **使用外网中继**：在控制台「外网中继地址」直接填入你的 VPS 公网 **`IP:8443`**（如 `203.0.113.10:8443`，会自动补全 `wss://` 并自动开启自签 TLS 证书适配）→ 点击 **「保存并应用」**。
+2. **双通道默认常开（按需配置外网地址即可）**：
+   - **内网直连通道**：安装启动后**默认自动开启**（监听 `0.0.0.0:18791` + UDP `18792`），左侧卡片直接显示 6 位内网配对码，若仅在局域网使用无需任何额外配置；
+   - **外网中继通道**：在右侧卡片「外网中继地址」填入你的 VPS 公网 **`IP:8443`**（如 `203.0.113.10:8443`，会自动补全 `wss://` 并自动开启自签 TLS 证书适配）→ 点击 **「保存并应用」**，此后电脑端内网与外网同时在线待命。
 3. 命令行查看运行状态与当前 6 位配对码（源码安装方式）：
    ```powershell
    node --no-warnings .\bridge\src\index.mjs --show-pair-code
@@ -157,7 +159,7 @@ curl -k https://127.0.0.1:8443/healthz
 
 ### 第 3 步：安装 Android App
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.1-android.apk` 并直接安装到手机。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.1.0-android.apk` 并直接安装到手机。
 - **方式 B（从源码自行构建）**：详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
 
 ```bash
