@@ -1,8 +1,12 @@
 /**
- * Transport-Agnostic Protocol v1 Envelope Validator & Dual-Mode Router
+ * Transport-Agnostic Protocol v1 Envelope Validator & Dual-Standby Smart Router
  *
- * Shared by both WAN `RelayClient` and LAN `LanServer` so Envelope validation,
- * protocol version checks, and business handler routing are 100% identical.
+ * Desktop Bridge keeps BOTH channels open simultaneously by default:
+ *   1. `LanServer` listening on `ws://0.0.0.0:18791` + UDP `18792` discovery
+ *   2. `RelayClient` connected outbound to WAN `relayUrl` (if configured)
+ *
+ * The mobile phone freely decides whether to connect via LAN Direct or WAN Relay without
+ * requiring any manual mode toggle on the PC!
  */
 
 import { EventEmitter } from 'node:events';
@@ -109,8 +113,8 @@ export function parseAndValidateEnvelope(rawText) {
 }
 
 /**
- * Unified single-active-mode router between RelayClient (WAN) and LanServer (LAN).
- * Never connects both simultaneously; never performs silent fallback.
+ * Dual-Standby Router between `LanServer` (LAN Direct) and `RelayClient` (WAN Relay).
+ * Both listeners stay open on the PC so the phone can switch between LAN and WAN at will.
  */
 export class BridgeTransportRouter extends EventEmitter {
   constructor({ config, relayClient, lanServer }) {
@@ -119,87 +123,143 @@ export class BridgeTransportRouter extends EventEmitter {
     this.relayClient = relayClient;
     this.lanServer = lanServer;
     this.peerConnectionMode = '';
+    // Tracks which channel the phone most recently used ('lan' | 'wan')
+    this.preferredOutbound = 'lan';
 
     this._bindTransportEvents();
   }
 
   get mode() {
-    return this.config.lanEnabled ? 'lan' : 'wan';
+    const lanOn = Boolean(this.lanServer?.running);
+    const wanOn = Boolean(this.relayClient && !this.relayClient.manualPaused && !this.relayClient.lanPaused);
+    if (lanOn && wanOn) return 'dual';
+    if (lanOn) return 'lan';
+    return 'wan';
   }
 
   get peerOnline() {
-    return this.config.lanEnabled
-      ? Boolean(this.lanServer?.peerOnline)
-      : Boolean(this.relayClient?.peerOnline);
+    return Boolean(this.lanServer?.peerOnline || this.relayClient?.peerOnline);
   }
 
+  /**
+   * Routes outbound frames to whichever channel the phone is currently connected on.
+   * If both briefly report online during a phone-side switch, prefers the channel that most
+   * recently authenticated / sent a frame; if phone is completely offline and `type === 'event.notify'`,
+   * queues on available offline queues (deduplicated by `notifyId` on the phone).
+   */
   sendEnvelope(type, payload = {}, reqId = crypto.randomUUID()) {
-    if (this.config.lanEnabled) {
-      return this.lanServer ? this.lanServer.sendEnvelope(type, payload, reqId) : false;
+    const lanOnline = Boolean(this.lanServer?.peerOnline);
+    const wanOnline = Boolean(this.relayClient?.peerOnline);
+
+    if (lanOnline && !wanOnline) {
+      return this.lanServer.sendEnvelope(type, payload, reqId);
     }
-    return this.relayClient ? this.relayClient.sendEnvelope(type, payload, reqId) : false;
+    if (wanOnline && !lanOnline) {
+      return this.relayClient.sendEnvelope(type, payload, reqId);
+    }
+    if (lanOnline && wanOnline) {
+      if (this.preferredOutbound === 'wan') {
+        return this.relayClient.sendEnvelope(type, payload, reqId);
+      }
+      return this.lanServer.sendEnvelope(type, payload, reqId);
+    }
+
+    // Neither channel currently has the phone online -> allow offline notification buffering
+    let buffered = false;
+    if (this.lanServer?.running) {
+      buffered = this.lanServer.sendEnvelope(type, payload, reqId) || buffered;
+    }
+    if (this.relayClient && this.relayClient.connected) {
+      buffered = this.relayClient.sendEnvelope(type, payload, reqId) || buffered;
+    }
+    return buffered;
+  }
+
+  _recomputePeerMode() {
+    if (this.lanServer?.peerOnline && !this.relayClient?.peerOnline) {
+      this.peerConnectionMode = 'lan';
+      this.preferredOutbound = 'lan';
+    } else if (this.relayClient?.peerOnline && !this.lanServer?.peerOnline) {
+      this.peerConnectionMode = 'wan';
+      this.preferredOutbound = 'wan';
+    } else if (!this.lanServer?.peerOnline && !this.relayClient?.peerOnline) {
+      this.peerConnectionMode = '';
+    }
   }
 
   _bindTransportEvents() {
-    // WAN Relay events (forwarded only when WAN is the active mode)
+    // ── WAN Relay Events (Always active whenever RelayClient is connected) ──
     if (this.relayClient) {
       this.relayClient.on('paired', (payload) => {
-        if (!this.config.lanEnabled) {
-          this.peerConnectionMode = 'wan';
-          this.emit('paired', { ...payload, transport: 'wan' });
-        }
+        this.preferredOutbound = 'wan';
+        this.peerConnectionMode = 'wan';
+        this._syncCombinedRuntimeStatus();
+        this.emit('paired', { ...payload, transport: 'wan' });
       });
 
       this.relayClient.on('authenticated', (info) => {
-        if (!this.config.lanEnabled) {
-          if (info?.peerOnline) this.peerConnectionMode = 'wan';
-          this.emit('authenticated', { ...info, transport: 'wan' });
+        if (info?.peerOnline) {
+          this.preferredOutbound = 'wan';
+          if (!this.lanServer?.peerOnline) this.peerConnectionMode = 'wan';
         }
+        this._syncCombinedRuntimeStatus();
+        this.emit('authenticated', { ...info, transport: 'wan' });
       });
 
       this.relayClient.on('presence', (payload) => {
-        if (!this.config.lanEnabled) {
-          if (payload?.online) this.peerConnectionMode = this.peerConnectionMode || 'wan';
-          else this.peerConnectionMode = '';
-          this.emit('presence', { ...payload, transport: 'wan' });
+        if (payload?.online) {
+          this.preferredOutbound = 'wan';
+          this.peerConnectionMode = 'wan';
+        } else {
+          this._recomputePeerMode();
         }
+        this._syncCombinedRuntimeStatus();
+        this.emit('presence', { online: this.peerOnline, transport: 'wan' });
+      });
+
+      this.relayClient.on('disconnected', () => {
+        this._recomputePeerMode();
+        this._syncCombinedRuntimeStatus();
       });
 
       this.relayClient.on('message', (envelope) => {
-        if (this.config.lanEnabled) return;
+        this.preferredOutbound = 'wan';
+        this.peerConnectionMode = 'wan';
         if (envelope.type === 'client.mode') {
           this.peerConnectionMode = String(envelope.payload?.mode || 'wan').toLowerCase();
           this.relayClient.sendEnvelope('ack', { ok: true, mode: this.peerConnectionMode }, envelope.reqId);
+          this._syncCombinedRuntimeStatus();
           return;
         }
         this.emit('message', envelope);
       });
     }
 
-    // LAN Direct events (forwarded only when LAN is the active mode)
+    // ── LAN Direct Events (Always active whenever LanServer is listening) ──
     if (this.lanServer) {
       this.lanServer.on('paired', (payload) => {
-        if (this.config.lanEnabled) {
-          this.peerConnectionMode = 'lan';
-          this._syncCombinedRuntimeStatus();
-          this.emit('paired', { ...payload, transport: 'lan' });
-        }
+        this.preferredOutbound = 'lan';
+        this.peerConnectionMode = 'lan';
+        this._syncCombinedRuntimeStatus();
+        this.emit('paired', { ...payload, transport: 'lan' });
       });
 
       this.lanServer.on('authenticated', (info) => {
-        if (this.config.lanEnabled) {
-          this.peerConnectionMode = info?.peerMode || 'lan';
-          this._syncCombinedRuntimeStatus();
-          this.emit('authenticated', { ...info, transport: 'lan' });
-        }
+        this.preferredOutbound = 'lan';
+        this.peerConnectionMode = info?.peerMode || 'lan';
+        this._syncCombinedRuntimeStatus();
+        this.emit('authenticated', { ...info, transport: 'lan' });
       });
 
       this.lanServer.on('presence', (payload) => {
-        if (this.config.lanEnabled) {
-          this.peerConnectionMode = payload?.online ? (payload.peerMode || 'lan') : '';
-          this._syncCombinedRuntimeStatus();
-          this.emit('presence', { ...payload, transport: 'lan' });
+        if (payload?.online) {
+          this.preferredOutbound = 'lan';
+          this.peerConnectionMode = payload.peerMode || 'lan';
+        } else {
+          this._recomputePeerMode();
         }
+        this._syncCombinedRuntimeStatus();
+        this.emit('presence', { online: this.peerOnline, transport: 'lan' });
       });
 
       this.lanServer.on('status.changed', () => {
@@ -207,7 +267,8 @@ export class BridgeTransportRouter extends EventEmitter {
       });
 
       this.lanServer.on('message', (envelope) => {
-        if (!this.config.lanEnabled) return;
+        this.preferredOutbound = 'lan';
+        this.peerConnectionMode = 'lan';
         if (envelope.type === 'client.mode') {
           this.peerConnectionMode = String(envelope.payload?.mode || 'lan').toLowerCase();
           this.lanServer.sendEnvelope('ack', { ok: true, mode: this.peerConnectionMode }, envelope.reqId);
@@ -219,66 +280,114 @@ export class BridgeTransportRouter extends EventEmitter {
     }
   }
 
+  /**
+   * Starts BOTH LAN Direct listener (when `lanEnabled !== false`) AND WAN Relay client simultaneously!
+   */
   async startInitial() {
-    if (this.config.lanEnabled) {
-      this.config.lastConnectionMode = 'lan';
-      this.relayClient?.pauseForLanMode();
-      const res = await this.lanServer.start();
-      this._syncCombinedRuntimeStatus();
-      return res;
-    } else {
-      this.config.lastConnectionMode = 'wan';
-      await this.lanServer?.stop();
-      this.relayClient?.start();
-      return { ok: true, mode: 'wan' };
+    let lanRes = { ok: true };
+    if (this.config.lanEnabled !== false && this.lanServer) {
+      lanRes = await this.lanServer.start();
     }
+    if (this.relayClient && !this.relayClient.manualPaused) {
+      this.relayClient.start();
+    }
+    this._syncCombinedRuntimeStatus();
+    return {
+      ok: lanRes.ok,
+      mode: this.mode,
+      lanRunning: Boolean(this.lanServer?.running),
+      error: lanRes.error || null,
+    };
   }
 
-  async setMode(targetMode) {
-    const normalized = String(targetMode || '').trim().toLowerCase() === 'lan' ? 'lan' : 'wan';
-    if (normalized === 'lan') {
-      const wasWanPeerOnline = Boolean(!this.config.lanEnabled && this.relayClient?.peerOnline);
-      this.config.lanEnabled = true;
-      this.config.lastConnectionMode = 'lan';
-      if (!this.config._ephemeral) {
-        saveConfig(this.config);
-      }
-      this.relayClient?.pauseForLanMode();
-      if (wasWanPeerOnline) {
-        this.peerConnectionMode = '';
-        this.emit('presence', { online: false, transport: 'wan' });
-      }
+  async setLanEnabled(enabled) {
+    const want = Boolean(enabled);
+    this.config.lanEnabled = want;
+    if (!this.config._ephemeral) {
+      saveConfig(this.config);
+    }
+    if (want) {
       const startRes = await this.lanServer.start();
       this._syncCombinedRuntimeStatus();
-      logger.info('Transport', `Switched connection mode -> LAN (port=${this.lanServer.port}, ok=${startRes.ok})`);
+      logger.info('Transport', `LAN Direct listener enabled (port=${this.lanServer.port}, ok=${startRes.ok})`);
       return {
         ok: startRes.ok,
-        mode: 'lan',
+        lanEnabled: true,
         lanRunning: this.lanServer.running,
         lanPort: this.lanServer.port,
         lanIps: this.lanServer.getLanIps(),
         error: startRes.error || null,
       };
     } else {
-      const wasLanPeerOnline = Boolean(this.config.lanEnabled && this.lanServer?.peerOnline);
-      this.config.lanEnabled = false;
-      this.config.lastConnectionMode = 'wan';
-      if (!this.config._ephemeral) {
-        saveConfig(this.config);
-      }
       await this.lanServer.stop();
-      if (wasLanPeerOnline) {
-        this.peerConnectionMode = '';
-        this.emit('presence', { online: false, transport: 'lan' });
-      }
-      this.relayClient?.resumeFromLanMode();
-      logger.info('Transport', 'Switched connection mode -> WAN Relay');
+      this._recomputePeerMode();
+      this._syncCombinedRuntimeStatus();
+      logger.info('Transport', 'LAN Direct listener stopped');
       return {
         ok: true,
-        mode: 'wan',
+        lanEnabled: false,
         lanRunning: false,
       };
     }
+  }
+
+  /**
+   * Supports `'dual'` (both open), `'lan'` (enable LAN without killing WAN unless requested),
+   * or `'wan'` (stop LAN listener & ensure WAN running).
+   */
+  async setMode(targetMode, { exclusive = false } = {}) {
+    const normalized = String(targetMode || '').trim().toLowerCase();
+    if (normalized === 'dual') {
+      this.config.lanEnabled = true;
+      this.config.lastConnectionMode = 'dual';
+      if (!this.config._ephemeral) saveConfig(this.config);
+      const startRes = await this.lanServer.start();
+      this.relayClient?.resumeFromLanMode();
+      this._syncCombinedRuntimeStatus();
+      return {
+        ok: startRes.ok,
+        mode: this.mode,
+        lanRunning: this.lanServer.running,
+        lanPort: this.lanServer.port,
+        lanIps: this.lanServer.getLanIps(),
+        error: startRes.error || null,
+      };
+    }
+
+    if (normalized === 'lan') {
+      this.config.lanEnabled = true;
+      this.config.lastConnectionMode = exclusive ? 'lan' : 'dual';
+      if (!this.config._ephemeral) saveConfig(this.config);
+      if (exclusive) {
+        this.relayClient?.pauseForLanMode();
+      }
+      const startRes = await this.lanServer.start();
+      this._syncCombinedRuntimeStatus();
+      logger.info('Transport', `LAN Direct listener started (port=${this.lanServer.port}, ok=${startRes.ok})`);
+      return {
+        ok: startRes.ok,
+        mode: this.mode,
+        lanRunning: this.lanServer.running,
+        lanPort: this.lanServer.port,
+        lanIps: this.lanServer.getLanIps(),
+        error: startRes.error || null,
+      };
+    }
+
+    // normalized === 'wan' -> stop LAN listener, keep/resume WAN Relay
+    this.config.lanEnabled = false;
+    this.config.lastConnectionMode = 'wan';
+    if (!this.config._ephemeral) saveConfig(this.config);
+    await this.lanServer.stop();
+    this._recomputePeerMode();
+    this.relayClient?.resumeFromLanMode();
+    this._syncCombinedRuntimeStatus();
+    logger.info('Transport', 'Stopped LAN listener; WAN Relay active');
+    return {
+      ok: true,
+      mode: 'wan',
+      lanRunning: false,
+    };
   }
 
   async stopAll() {
@@ -288,23 +397,34 @@ export class BridgeTransportRouter extends EventEmitter {
 
   _syncCombinedRuntimeStatus() {
     if (this.config._ephemeral) return;
-    if (!this.config.lanEnabled) return;
     writeRuntimeStatus({
       pid: process.pid,
-      connectionMode: 'lan',
-      lanEnabled: true,
+      connectionMode: this.mode,
+      activePhoneChannel: this.peerConnectionMode || null,
+      // LAN Direct state
+      lanEnabled: Boolean(this.config.lanEnabled),
       lanRunning: Boolean(this.lanServer?.running),
       lanPort: this.lanServer?.port || this.config.lanPort || 18791,
       lanIps: this.lanServer ? this.lanServer.getLanIps() : [],
       lanBindError: this.lanServer?.bindError || null,
-      paired: Boolean(this.lanServer?.paired),
-      pairedDeviceName: this.lanServer?.pairedDeviceName || '',
-      peerOnline: Boolean(this.lanServer?.peerOnline),
-      lastRttMs: this.lanServer?.lastRttMs ?? null,
-      pairingCode: this.lanServer?.currentPairingCode || null,
-      pairingExpiresAt: this.lanServer?.pairingExpiresAt || null,
+      lanPaired: Boolean(this.lanServer?.paired),
+      lanPairedDeviceName: this.lanServer?.pairedDeviceName || '',
+      lanPeerOnline: Boolean(this.lanServer?.peerOnline),
+      lanLastRttMs: this.lanServer?.lastRttMs ?? null,
+      lanPairingCode: this.lanServer?.currentPairingCode || null,
+      // WAN Relay state
       relayUrl: this.config.relayUrl,
       deviceId: this.config.deviceId,
+      manualPaused: Boolean(this.relayClient?.manualPaused),
+      connected: Boolean(this.relayClient?.connected),
+      authenticated: Boolean(this.relayClient?.authenticated),
+      paired: Boolean(this.relayClient?.paired),
+      pairedDeviceName: this.relayClient?.pairedDeviceName || '',
+      peerOnline: Boolean(this.relayClient?.peerOnline),
+      anyPeerOnline: this.peerOnline,
+      lastRttMs: this.relayClient?.lastRttMs ?? null,
+      pairingCode: this.relayClient?.currentPairingCode || null,
+      pairingExpiresAt: this.relayClient?.pairingExpiresAt || null,
     });
   }
 }

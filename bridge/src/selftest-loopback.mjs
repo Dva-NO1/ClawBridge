@@ -108,10 +108,10 @@ async function main() {
     relayUrl: 'wss://127.0.0.1:59999', // intentionally unreachable in WAN test
     deviceId: 'bridge-test-' + crypto.randomUUID().slice(0, 8),
     deviceToken: 'wan_secret_token_' + 'a'.repeat(47),
-    lanEnabled: false,
+    lanEnabled: true,
     lanPort: testLanPort,
     lanToken: '',
-    lastConnectionMode: 'wan',
+    lastConnectionMode: 'dual',
     projectsRootDir: process.cwd(),
   };
 
@@ -180,12 +180,11 @@ async function main() {
   });
 
   try {
-    console.log('=== [2/8] Default WAN Mode & Dynamic LAN Start ===');
-    assert.equal(lanServer.running, false, 'LanServer must be OFF by default when lanEnabled=false');
-
-    const switchRes = await router.setMode('lan');
-    assert.equal(switchRes.ok, true);
-    assert.equal(lanServer.running, true);
+    console.log('=== [2/8] Default Dual-Channel Auto-Start (LAN + WAN Standby) ===');
+    const initRes = await router.startInitial();
+    relayClient.disconnectManually();
+    assert.equal(initRes.ok, true);
+    assert.equal(lanServer.running, true, 'LanServer must auto-start by default in Dual-Standby mode');
     assert.ok(lanServer.currentPairingCode && lanServer.currentPairingCode.length === 6, 'Must generate 6-digit LAN pairing code');
 
     console.log('=== [3/8] UDP Discovery Responder & Zero Token Leakage ===');
@@ -341,27 +340,25 @@ async function main() {
       assert.equal(rawStatusJson.includes(testConfig.deviceToken), false, 'IPC response MUST NOT leak WAN deviceToken');
 
       const statusData = JSON.parse(rawStatusJson);
-      assert.equal(statusData.connectionMode, 'lan');
       assert.equal(statusData.lanEnabled, true);
       assert.equal(statusData.lanRunning, true);
       assert.equal(statusData.lanPaired, true);
       assert.equal(statusData.lanPeerOnline, true);
       assert.equal(statusData.peerConnectionMode, 'lan');
 
-      // Switch back to WAN via IPC -> LanServer stops dynamically and closes active LAN socket cleanly
+      // Verify independent LAN toggle stops LanServer cleanly when explicitly paused
       const closeOnModeSwitch = waitWsClose(wsAuth);
-      const modeSwitchRes = await fetch(`http://127.0.0.1:${testIpcPort}/api/mode`, {
+      const modeSwitchRes = await fetch(`http://127.0.0.1:${testIpcPort}/api/lan/toggle`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-ClawBridge-Token': ipcToken,
         },
-        body: JSON.stringify({ mode: 'wan' }),
+        body: JSON.stringify({ enabled: false }),
       });
       assert.equal(modeSwitchRes.status, 200);
       await closeOnModeSwitch;
-      assert.equal(lanServer.running, false, 'LanServer must stop immediately when switched to WAN');
-      // Keep relayClient paused in ephemeral test so it doesn't dial dummy port
+      assert.equal(lanServer.running, false, 'LanServer must stop immediately when explicitly toggled off');
       relayClient.disconnectManually();
     }
 

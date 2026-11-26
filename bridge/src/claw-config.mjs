@@ -210,10 +210,10 @@ function defaultConfig() {
     targetAntigravityVersion: '2.34.0',
     quotaRefreshIntervalSec: 300,
     metricsEnabled: true,
-    lanEnabled: false,
+    lanEnabled: true,
     lanPort: 18791,
     lanToken: '',
-    lastConnectionMode: 'wan',
+    lastConnectionMode: 'dual',
     projectsRootDir: getDefaultDesktopDir(),
     assistantSessionId: '',
     personaPath: repoPersona,
@@ -252,15 +252,12 @@ export function loadConfig() {
 
   merged.relayUrl = String(merged.relayUrl || base.relayUrl).trim();
   merged.projectsRootDir = String(merged.projectsRootDir || '').trim() || getDefaultDesktopDir();
-  merged.lanEnabled = Boolean(merged.lanEnabled);
+  // Default lanEnabled to true unless explicitly set to false in config.json
+  merged.lanEnabled = loaded.lanEnabled === false ? false : true;
   const parsedLanPort = Number(merged.lanPort);
   merged.lanPort = parsedLanPort > 0 && parsedLanPort <= 65535 ? parsedLanPort : 18791;
   merged.lanToken = typeof merged.lanToken === 'string' ? merged.lanToken.trim() : '';
-  merged.lastConnectionMode = merged.lanEnabled
-    ? 'lan'
-    : String(merged.lastConnectionMode || 'wan').toLowerCase() === 'lan'
-      ? 'lan'
-      : 'wan';
+  merged.lastConnectionMode = String(merged.lastConnectionMode || 'dual').toLowerCase();
 
   // Spec 5.5: If relayUrl changed since last bound session, clear old token & rotate deviceId if needed for clean re-pair
   if (merged.lastBoundRelayUrl && merged.lastBoundRelayUrl !== merged.relayUrl) {

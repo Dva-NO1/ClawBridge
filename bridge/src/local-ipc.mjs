@@ -145,11 +145,22 @@ export function startLocalControlServer({
 
       if (req.method === 'POST' && url === '/api/mode') {
         const body = await readJsonBody(req);
-        const mode = String(body.mode || '').trim().toLowerCase() === 'lan' ? 'lan' : 'wan';
+        const rawMode = String(body.mode || '').trim().toLowerCase();
+        const mode = rawMode === 'dual' ? 'dual' : rawMode === 'lan' ? 'lan' : 'wan';
         if (!transportRouter) {
           return send(500, { ok: false, error: 'transportRouter unavailable' });
         }
-        const resObj = await transportRouter.setMode(mode);
+        const resObj = await transportRouter.setMode(mode, { exclusive: Boolean(body.exclusive) });
+        return send(200, resObj);
+      }
+
+      if (req.method === 'POST' && url === '/api/lan/toggle') {
+        const body = await readJsonBody(req);
+        if (!transportRouter) {
+          return send(500, { ok: false, error: 'transportRouter unavailable' });
+        }
+        const enabled = body.enabled !== undefined ? Boolean(body.enabled) : !relay.config.lanEnabled;
+        const resObj = await transportRouter.setLanEnabled(enabled);
         return send(200, resObj);
       }
 
@@ -170,30 +181,16 @@ export function startLocalControlServer({
       }
 
       if (req.method === 'POST' && url === '/api/connect') {
-        if (relay.config.lanEnabled && transportRouter) {
-          const resObj = await transportRouter.setMode('wan');
-          relay.connectManually();
-          return send(200, resObj);
-        }
         relay.connectManually();
         return send(200, { ok: true });
       }
 
       if (req.method === 'POST' && url === '/api/disconnect') {
-        if (relay.config.lanEnabled && lanServer) {
-          await lanServer.stop();
-          return send(200, { ok: true, mode: 'lan', lanRunning: false });
-        }
         relay.disconnectManually();
         return send(200, { ok: true });
       }
 
       if (req.method === 'POST' && url === '/api/reconnect') {
-        if (relay.config.lanEnabled && lanServer) {
-          await lanServer.stop();
-          const startRes = await lanServer.start();
-          return send(200, { ok: startRes.ok, mode: 'lan', lanRunning: lanServer.running, error: startRes.error || null });
-        }
         relay.connectManually();
         relay.forceReconnectNow('desktop_ui_reconnect');
         return send(200, { ok: true });

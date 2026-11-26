@@ -77,50 +77,51 @@ namespace ClawBridgeDesktop
 
         private bool _allowRealExit = false;
         private bool _launchingDaemon = false;
-        private DateTime _lastLaunchAttempt = DateTime.MinValue;
+        private DateTime _lastLaunchAttempt = DateTime.UtcNow.AddSeconds(-10);
         private string _lastRelayLoaded = "";
-        private string _currentPairCode = "";
+        private string _currentWanPairCode = "";
         private string _currentLanPairCode = "";
         private string _currentLanIp = "";
-        private string _activeMode = "wan";
-        private string _lastShownBindError = "";
+        private bool _lanCurrentlyEnabled = true;
 
-        // Top Big Dual-Mode Segmented Switch (>= 54px button height)
-        private Border _segLanBorder;
-        private System.Windows.Shapes.Ellipse _segLanDot;
-        private TextBlock _segLanTitle;
-        private TextBlock _segLanSub;
+        // Top Dual-Standby Hero Summary
+        private Border _heroBannerBorder;
+        private System.Windows.Shapes.Ellipse _heroDot;
+        private TextBlock _heroTitle;
+        private TextBlock _heroSubtitle;
+        private Button _btnRestoreDual;
 
-        private Border _segWanBorder;
-        private System.Windows.Shapes.Ellipse _segWanDot;
-        private TextBlock _segWanTitle;
-        private TextBlock _segWanSub;
-
-        // LAN Alert / Firewall Guidance Banner
-        private Border _lanAlertCard;
-        private TextBlock _lanAlertTitle;
-        private TextBlock _lanAlertBody;
-
-        // Hero Status Card Elements
-        private System.Windows.Shapes.Ellipse _statusDot;
-        private TextBlock _statusTitle;
-        private TextBlock _statusSubtitle;
-        private TextBlock _rttBadge;
-        private Button _btnConnect;
-        private Button _btnDisconnect;
-        private Button _btnReconnect;
+        // Left Channel Card: LAN Direct (Default Always ON, Port 18791)
+        private Border _lanCardBorder;
+        private System.Windows.Shapes.Ellipse _lanDot;
+        private TextBlock _lanStateTitle;
+        private TextBlock _lanRttBadge;
+        private TextBlock _lanIpText;
+        private TextBlock _lanPortText;
+        private TextBlock _lanAlertText;
+        private TextBlock _lanPairBig;
+        private TextBlock _lanPairSub;
         private Button _btnCopyLanIp;
-
-        // Pairing / LAN Details Card Elements
-        private TextBlock _pairHeader;
-        private Border _lanIpBox;
-        private TextBlock _lanIpValueText;
-        private TextBlock _lanIpPortHint;
-        private TextBlock _pairCodeBig;
-        private TextBlock _pairSubInfo;
-        private Button _btnCopyOrNewCode;
+        private Button _btnCopyLanCode;
         private Button _btnRefreshLanCode;
-        private Button _btnUnpair;
+        private Button _btnUnpairLan;
+        private Button _btnToggleLan;
+        private Button _btnOpenFirewall;
+
+        // Right Channel Card: WAN Relay (Default Always ON, WSS)
+        private Border _wanCardBorder;
+        private System.Windows.Shapes.Ellipse _wanDot;
+        private TextBlock _wanStateTitle;
+        private TextBlock _wanRttBadge;
+        private TextBlock _wanEndpointText;
+        private TextBlock _wanStateSub;
+        private TextBlock _wanPairBig;
+        private TextBlock _wanPairSub;
+        private Button _btnCopyWanCode;
+        private Button _btnUnpairWan;
+        private Button _btnWanConnect;
+        private Button _btnWanDisconnect;
+        private Button _btnWanReconnect;
 
         // Quota & Antigravity Card
         private TextBlock _quotaPlanText;
@@ -129,26 +130,24 @@ namespace ClawBridgeDesktop
         private TextBlock _quotaCodexText;
         private TextBlock _cdpText;
 
-        // WAN Relay Config Card
-        private Border _wanRelayCfgCard;
+        // WAN Relay URL Config Card
         private TextBox _relayUrlBox;
         private CheckBox _chkTrustSelfSigned;
         private TextBox _logBox;
 
-        private Forms.ToolStripMenuItem _trayModeLanItem;
-        private Forms.ToolStripMenuItem _trayModeWanItem;
-        private Forms.ToolStripMenuItem _trayConnectItem;
-        private Forms.ToolStripMenuItem _trayDisconnectItem;
+        private Forms.ToolStripMenuItem _trayLanToggleItem;
+        private Forms.ToolStripMenuItem _trayWanConnectItem;
+        private Forms.ToolStripMenuItem _trayWanDisconnectItem;
 
         public MainWindow(bool startMinimized, EventWaitHandle showEvent)
         {
             _baseDir = AppDomain.CurrentDomain.BaseDirectory;
             _appDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "clawbridge");
 
-            Title = "ClawBridge 桌面控制台 · 双模式 (内网直连 / 外网中继)";
-            Width = 820;
-            Height = 840;
-            MinWidth = 700;
+            Title = "ClawBridge 桌面控制台 v2.1 · 内外网双通道常开待命";
+            Width = 880;
+            Height = 860;
+            MinWidth = 740;
             MinHeight = 640;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background = BrushHex("#0B0F17");
@@ -178,7 +177,7 @@ namespace ClawBridgeDesktop
             {
                 _trayIcon.Icon = System.Drawing.SystemIcons.Application;
             }
-            _trayIcon.Text = "ClawBridge 桌面控制台 (左键呼出 / Ctrl+Alt+C)";
+            _trayIcon.Text = "ClawBridge 桌面控制台 · 双通道待命 (Ctrl+Alt+C)";
             _trayIcon.Visible = true;
             _trayIcon.MouseClick += (s, e) =>
             {
@@ -192,16 +191,15 @@ namespace ClawBridgeDesktop
             var menu = new Forms.ContextMenuStrip();
             menu.Items.Add("呼出 / 隐藏控制台 (Ctrl+Alt+C)", null, (s, e) => ToggleWindowVisibility());
             menu.Items.Add(new Forms.ToolStripSeparator());
-            _trayModeLanItem = new Forms.ToolStripMenuItem("⚡ 切换至：内网直连模式", null, (s, e) => SwitchConnectionMode("lan"));
-            _trayModeWanItem = new Forms.ToolStripMenuItem("🌐 切换至：外网中继模式", null, (s, e) => SwitchConnectionMode("wan"));
-            menu.Items.Add(_trayModeLanItem);
-            menu.Items.Add(_trayModeWanItem);
+            menu.Items.Add("⚡+🌐 一键确保内外网双通道全开", null, (s, e) => EnableBothChannels());
+            _trayLanToggleItem = new Forms.ToolStripMenuItem("暂停 / 开启内网直连监听 (18791)", null, (s, e) => ToggleLanListener());
+            menu.Items.Add(_trayLanToggleItem);
             menu.Items.Add(new Forms.ToolStripSeparator());
-            _trayConnectItem = new Forms.ToolStripMenuItem("启动 / 连接", null, (s, e) => OnConnectClicked());
-            _trayDisconnectItem = new Forms.ToolStripMenuItem("停止 / 断开", null, (s, e) => SendPost("/api/disconnect"));
-            menu.Items.Add(_trayConnectItem);
-            menu.Items.Add(_trayDisconnectItem);
-            menu.Items.Add("立即重连 / 重启监听", null, (s, e) => SendPost("/api/reconnect"));
+            _trayWanConnectItem = new Forms.ToolStripMenuItem("连接外网中继", null, (s, e) => SendPost("/api/connect"));
+            _trayWanDisconnectItem = new Forms.ToolStripMenuItem("暂停外网中继", null, (s, e) => SendPost("/api/disconnect"));
+            menu.Items.Add(_trayWanConnectItem);
+            menu.Items.Add(_trayWanDisconnectItem);
+            menu.Items.Add("立即重连外网中继", null, (s, e) => SendPost("/api/reconnect"));
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add("彻底退出（停止后台桥服务）", null, (s, e) => FullExit());
             _trayIcon.ContextMenuStrip = menu;
@@ -223,7 +221,6 @@ namespace ClawBridgeDesktop
                 }
             };
 
-            // Create hidden HWND early so global Ctrl+Alt+C hotkey works even when launched --minimized
             var helper = new WindowInteropHelper(this);
             IntPtr handle = helper.EnsureHandle();
             _hwndSource = HwndSource.FromHwnd(handle);
@@ -233,7 +230,6 @@ namespace ClawBridgeDesktop
                 RegisterHotKey(handle, HOTKEY_ID, MOD_CONTROL | MOD_ALT, VK_C);
             }
 
-            // Background thread listening for singleton wake-up signal
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 while (!_allowRealExit)
@@ -303,68 +299,17 @@ namespace ClawBridgeDesktop
             Application.Current.Shutdown();
         }
 
-        private void SwitchConnectionMode(string targetMode)
+        private void EnableBothChannels()
         {
-            string normalized = string.Equals(targetMode, "lan", StringComparison.OrdinalIgnoreCase) ? "lan" : "wan";
-            string token = ReadIpcToken();
-            string jsonBody = _json.Serialize(new Dictionary<string, object> { { "mode", normalized } });
-
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                try
-                {
-                    var req = (HttpWebRequest)WebRequest.Create(IPC_BASE + "/api/mode");
-                    req.Proxy = null;
-                    req.Method = "POST";
-                    req.Timeout = 5000;
-                    req.ContentType = "application/json; charset=utf-8";
-                    req.Headers["X-ClawBridge-Token"] = token;
-                    byte[] bytes = Encoding.UTF8.GetBytes(jsonBody);
-                    req.ContentLength = bytes.Length;
-                    using (var s = req.GetRequestStream())
-                    {
-                        s.Write(bytes, 0, bytes.Length);
-                    }
-                    using (var resp = (HttpWebResponse)req.GetResponse())
-                    using (var reader = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                    {
-                        string respRaw = reader.ReadToEnd();
-                        var resData = _json.Deserialize<Dictionary<string, object>>(respRaw);
-                        bool ok = GetBool(resData, "ok");
-                        string errText = GetStr(resData, "error");
-                        if (normalized == "lan" && (!ok || !string.IsNullOrEmpty(errText)))
-                        {
-                            Dispatcher.BeginInvoke(new Action(() =>
-                            {
-                                string msg = string.IsNullOrEmpty(errText)
-                                    ? "开启内网直连服务失败，请检查端口 18791 是否被占用或检查 Windows 防火墙设置。"
-                                    : (errText + "\n\n如手机无法发现或连接电脑，请在 Windows 防火墙放行 ClawBridge (Node.js) 的专用网络入站（TCP 18791 / UDP 18792）。");
-                                MessageBox.Show(msg, "内网直连开启异常", MessageBoxButton.OK, MessageBoxImage.Warning);
-                            }));
-                        }
-                    }
-                    Dispatcher.BeginInvoke(new Action(PollBackend));
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        MessageBox.Show("切换连接模式失败：" + ex.Message, "切换异常", MessageBoxButton.OK, MessageBoxImage.Error);
-                    }));
-                }
-            });
+            SendPost("/api/mode", "{\"mode\":\"dual\"}");
+            SendPost("/api/connect");
         }
 
-        private void OnConnectClicked()
+        private void ToggleLanListener()
         {
-            if (_activeMode == "lan")
-            {
-                SwitchConnectionMode("lan");
-            }
-            else
-            {
-                SendPost("/api/connect");
-            }
+            bool target = !_lanCurrentlyEnabled;
+            string body = _json.Serialize(new Dictionary<string, object> { { "enabled", target } });
+            SendPost("/api/lan/toggle", body);
         }
 
         private void BuildLayout()
@@ -372,343 +317,326 @@ namespace ClawBridgeDesktop
             var rootScroll = new ScrollViewer
             {
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                Padding = new Thickness(20)
+                Padding = new Thickness(18)
             };
 
             var stack = new StackPanel();
 
-            // ── 0. Top Prominent Dual-Mode Segmented Switch (Height >= 56px) ──
-            var modeSwitchOuter = new Border
+            // ── 0. Top Dual-Channel Standby Banner ──
+            _heroBannerBorder = new Border
             {
-                Background = BrushHex("#0F172A"),
-                BorderBrush = BrushHex("#334155"),
+                Background = BrushHex("#102033"),
+                BorderBrush = BrushHex("#2DD4BF"),
                 BorderThickness = new Thickness(1.5),
-                CornerRadius = new CornerRadius(14),
-                Padding = new Thickness(6),
+                CornerRadius = new CornerRadius(12),
+                Padding = new Thickness(16, 13, 16, 13),
                 Margin = new Thickness(0, 0, 0, 14)
             };
 
-            var modeGrid = new Grid();
-            modeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            modeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
-            modeGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var heroDock = new DockPanel();
+            var heroBtns = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            _btnRestoreDual = MakeActionButton("⚡+🌐 恢复双通道全开", "#0F766E", "#FFFFFF", true);
+            _btnRestoreDual.Visibility = Visibility.Collapsed;
+            _btnRestoreDual.Click += (s, e) => EnableBothChannels();
 
-            // Segment 1: LAN Direct (内网直连)
-            _segLanBorder = new Border
-            {
-                MinHeight = 58,
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(16, 9, 16, 9),
-                Background = BrushHex("#131C2E"),
-                BorderBrush = BrushHex("#1E293B"),
-                BorderThickness = new Thickness(1.5),
-                Cursor = Cursors.Hand
-            };
-            _segLanBorder.MouseLeftButtonUp += (s, e) => SwitchConnectionMode("lan");
+            var btnMinTray = MakeSmallButton("最小化到托盘");
+            btnMinTray.Margin = new Thickness(0);
+            btnMinTray.Click += (s, e) => Hide();
 
-            var segLanRow = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _segLanDot = new System.Windows.Shapes.Ellipse
-            {
-                Width = 12,
-                Height = 12,
-                Fill = BrushHex("#64748B"),
-                Margin = new Thickness(0, 0, 10, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            var segLanTextCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            _segLanTitle = new TextBlock
-            {
-                Text = "⚡ 内网直连 (LAN)",
-                FontSize = 16.5,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushHex("#CBD5E1")
-            };
-            _segLanSub = new TextBlock
-            {
-                Text = "未开启 · 点击切换局域网极速直连",
-                FontSize = 11.5,
-                Foreground = BrushHex("#94A3B8"),
-                Margin = new Thickness(0, 2, 0, 0)
-            };
-            segLanTextCol.Children.Add(_segLanTitle);
-            segLanTextCol.Children.Add(_segLanSub);
-            segLanRow.Children.Add(_segLanDot);
-            segLanRow.Children.Add(segLanTextCol);
-            _segLanBorder.Child = segLanRow;
-            Grid.SetColumn(_segLanBorder, 0);
-            modeGrid.Children.Add(_segLanBorder);
+            heroBtns.Children.Add(_btnRestoreDual);
+            heroBtns.Children.Add(btnMinTray);
+            DockPanel.SetDock(heroBtns, Dock.Right);
+            heroDock.Children.Add(heroBtns);
 
-            // Segment 2: WAN Relay (外网中继)
-            _segWanBorder = new Border
-            {
-                MinHeight = 58,
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(16, 9, 16, 9),
-                Background = BrushHex("#1E3A8A"),
-                BorderBrush = BrushHex("#60A5FA"),
-                BorderThickness = new Thickness(1.5),
-                Cursor = Cursors.Hand
-            };
-            _segWanBorder.MouseLeftButtonUp += (s, e) => SwitchConnectionMode("wan");
-
-            var segWanRow = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _segWanDot = new System.Windows.Shapes.Ellipse
-            {
-                Width = 12,
-                Height = 12,
-                Fill = BrushHex("#38BDF8"),
-                Margin = new Thickness(0, 0, 10, 0),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            var segWanTextCol = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            _segWanTitle = new TextBlock
-            {
-                Text = "🌐 外网中继 (WAN)",
-                FontSize = 16.5,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushHex("#FFFFFF")
-            };
-            _segWanSub = new TextBlock
-            {
-                Text = "当前模式 · 检测中继状态中...",
-                FontSize = 11.5,
-                Foreground = BrushHex("#DBEAFE"),
-                Margin = new Thickness(0, 2, 0, 0)
-            };
-            segWanTextCol.Children.Add(_segWanTitle);
-            segWanTextCol.Children.Add(_segWanSub);
-            segWanRow.Children.Add(_segWanDot);
-            segWanRow.Children.Add(segWanTextCol);
-            _segWanBorder.Child = segWanRow;
-            Grid.SetColumn(_segWanBorder, 2);
-            modeGrid.Children.Add(_segWanBorder);
-
-            modeSwitchOuter.Child = modeGrid;
-            stack.Children.Add(modeSwitchOuter);
-
-            // ── 0.5 LAN Port Bind Error / Firewall Guidance Banner ──
-            _lanAlertCard = new Border
-            {
-                Background = BrushHex("#1E293B"),
-                BorderBrush = BrushHex("#F59E0B"),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(14, 10, 14, 10),
-                Margin = new Thickness(0, 0, 0, 14),
-                Visibility = Visibility.Collapsed
-            };
-            var alertDock = new DockPanel();
-            var btnOpenFirewall = MakeSmallButton("打开 Windows 防火墙");
-            btnOpenFirewall.Margin = new Thickness(10, 0, 0, 0);
-            btnOpenFirewall.VerticalAlignment = VerticalAlignment.Center;
-            btnOpenFirewall.Click += (s, e) =>
-            {
-                try
-                {
-                    Process.Start(new ProcessStartInfo("firewall.cpl") { UseShellExecute = true });
-                }
-                catch { }
-            };
-            DockPanel.SetDock(btnOpenFirewall, Dock.Right);
-            alertDock.Children.Add(btnOpenFirewall);
-
-            var alertTextStack = new StackPanel();
-            _lanAlertTitle = new TextBlock
-            {
-                Text = "局域网连接提示",
-                FontSize = 13,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushHex("#FDE68A")
-            };
-            _lanAlertBody = new TextBlock
-            {
-                Text = "",
-                FontSize = 12,
-                Foreground = BrushHex("#E2E8F0"),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 3, 0, 0)
-            };
-            alertTextStack.Children.Add(_lanAlertTitle);
-            alertTextStack.Children.Add(_lanAlertBody);
-            alertDock.Children.Add(alertTextStack);
-            _lanAlertCard.Child = alertDock;
-            stack.Children.Add(_lanAlertCard);
-
-            // ── 1. Hero Connection & Connect/Disconnect Card ──
-            var heroCard = MakeCard();
-            var heroGrid = new Grid();
-            heroGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            heroGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(14) });
-            heroGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-            var topRow = new DockPanel();
-            _rttBadge = new TextBlock
-            {
-                Text = "-- ms",
-                FontFamily = new FontFamily("Consolas"),
-                FontSize = 14,
-                FontWeight = FontWeights.Bold,
-                Foreground = BrushHex("#5CE1E6"),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            DockPanel.SetDock(_rttBadge, Dock.Right);
-            topRow.Children.Add(_rttBadge);
-
-            var statusLeft = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-            _statusDot = new System.Windows.Shapes.Ellipse
+            var heroLeft = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            _heroDot = new System.Windows.Shapes.Ellipse
             {
                 Width = 14,
                 Height = 14,
-                Fill = BrushHex("#FACC15"),
-                Margin = new Thickness(0, 0, 10, 0),
+                Fill = BrushHex("#34D399"),
+                Margin = new Thickness(0, 0, 12, 0),
                 VerticalAlignment = VerticalAlignment.Center
             };
-            var titleStack = new StackPanel();
-            _statusTitle = new TextBlock
+            var heroTextCol = new StackPanel();
+            _heroTitle = new TextBlock
             {
-                Text = "正在连接本地桌面桥服务...",
-                FontSize = 18.5,
+                Text = "正在连接本地桥后台引擎...",
+                FontSize = 17.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F8FAFC")
             };
-            _statusSubtitle = new TextBlock
+            _heroSubtitle = new TextBlock
             {
-                Text = "正在初始化后台守护进程",
-                FontSize = 12.5,
+                Text = "电脑端默认同时开启「内网直连 (18791)」与「外网中继」，无需在电脑切换，直接在手机端选择访问方式即可",
+                FontSize = 12,
                 Foreground = BrushHex("#94A3B8"),
                 TextWrapping = TextWrapping.Wrap,
                 Margin = new Thickness(0, 3, 0, 0)
             };
-            titleStack.Children.Add(_statusTitle);
-            titleStack.Children.Add(_statusSubtitle);
-            statusLeft.Children.Add(_statusDot);
-            statusLeft.Children.Add(titleStack);
-            topRow.Children.Add(statusLeft);
-            Grid.SetRow(topRow, 0);
-            heroGrid.Children.Add(topRow);
+            heroTextCol.Children.Add(_heroTitle);
+            heroTextCol.Children.Add(_heroSubtitle);
+            heroLeft.Children.Add(_heroDot);
+            heroLeft.Children.Add(heroTextCol);
+            heroDock.Children.Add(heroLeft);
 
-            var btnRow = new WrapPanel { Orientation = Orientation.Horizontal };
-            _btnConnect = MakeActionButton("▶ 连接中继", "#10B981", "#052E16", true);
-            _btnConnect.Click += (s, e) => OnConnectClicked();
+            _heroBannerBorder.Child = heroDock;
+            stack.Children.Add(_heroBannerBorder);
 
-            _btnDisconnect = MakeActionButton("■ 断开连接", "#EF4444", "#FFFFFF", true);
-            _btnDisconnect.Click += (s, e) => SendPost("/api/disconnect");
+            // ── 1. Side-by-Side Dual Active Channel Cards (LAN Direct + WAN Relay) ──
+            var dualGrid = new Grid();
+            dualGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            dualGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
+            dualGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-            _btnReconnect = MakeActionButton("↻ 立即重连", "#1E293B", "#E2E8F0", false);
-            _btnReconnect.Click += (s, e) => SendPost("/api/reconnect");
+            // ── Left Card: LAN Direct Channel (Port 18791 + UDP 18792) ──
+            _lanCardBorder = MakeCard();
+            var lanStack = new StackPanel();
 
-            _btnCopyLanIp = MakeActionButton("复制本机局域网 IP", "#0F766E", "#FFFFFF", false);
-            _btnCopyLanIp.Visibility = Visibility.Collapsed;
-            _btnCopyLanIp.Click += (s, e) =>
+            var lanTopRow = new DockPanel();
+            _lanRttBadge = new TextBlock
             {
-                if (!string.IsNullOrEmpty(_currentLanIp))
-                {
-                    Clipboard.SetText(_currentLanIp);
-                    _statusSubtitle.Text = "已复制本机局域网 IP (" + _currentLanIp + ") 到剪贴板，可在手机端手动输入直连";
-                }
+                Text = "-- ms",
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = BrushHex("#34D399"),
+                VerticalAlignment = VerticalAlignment.Center
             };
+            DockPanel.SetDock(_lanRttBadge, Dock.Right);
+            lanTopRow.Children.Add(_lanRttBadge);
 
-            var btnMinTray = MakeActionButton("最小化到托盘", "#1E293B", "#94A3B8", false);
-            btnMinTray.Click += (s, e) => Hide();
-
-            btnRow.Children.Add(_btnConnect);
-            btnRow.Children.Add(_btnDisconnect);
-            btnRow.Children.Add(_btnReconnect);
-            btnRow.Children.Add(_btnCopyLanIp);
-            btnRow.Children.Add(btnMinTray);
-            Grid.SetRow(btnRow, 2);
-            heroGrid.Children.Add(btnRow);
-
-            heroCard.Child = heroGrid;
-            stack.Children.Add(heroCard);
-
-            // ── 2. Two-Column Row: Pairing/LAN Card + Quota Card ──
-            var midGrid = new Grid { Margin = new Thickness(0, 14, 0, 0) };
-            midGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.08, GridUnitType.Star) });
-            midGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(14) });
-            midGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.12, GridUnitType.Star) });
-
-            // Left: Mode-Adaptive Pairing & LAN Address Card
-            var pairCard = MakeCard();
-            var pairStack = new StackPanel();
-            _pairHeader = new TextBlock
+            var lanTitleRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            _lanDot = new System.Windows.Shapes.Ellipse
             {
-                Text = "手机配对与绑定状态",
-                FontSize = 15,
+                Width = 11,
+                Height = 11,
+                Fill = BrushHex("#38BDF8"),
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            _lanStateTitle = new TextBlock
+            {
+                Text = "⚡ 内网直连通道（默认常开）",
+                FontSize = 15.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F1F5F9")
             };
+            lanTitleRow.Children.Add(_lanDot);
+            lanTitleRow.Children.Add(_lanStateTitle);
+            lanTopRow.Children.Add(lanTitleRow);
+            lanStack.Children.Add(lanTopRow);
 
-            // LAN IP Box (shown in LAN mode)
-            _lanIpBox = new Border
+            var lanIpBox = new Border
             {
                 Background = BrushHex("#0B1320"),
                 BorderBrush = BrushHex("#1E3A5F"),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(8),
                 Padding = new Thickness(10, 7, 10, 7),
-                Margin = new Thickness(0, 8, 0, 2),
-                Visibility = Visibility.Collapsed
+                Margin = new Thickness(0, 10, 0, 6)
             };
             var lanIpStack = new StackPanel();
-            _lanIpValueText = new TextBlock
+            _lanIpText = new TextBlock
             {
-                Text = "本机局域网 IP：读取中...",
+                Text = "本机局域网 IP：检测中...",
                 FontFamily = new FontFamily("Consolas"),
-                FontSize = 14,
+                FontSize = 13.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#34D399")
             };
-            _lanIpPortHint = new TextBlock
+            _lanPortText = new TextBlock
             {
-                Text = "直连端口：18791 · UDP 自动发现：18792",
+                Text = "直连监听：ws://0.0.0.0:18791 · UDP 发现：18792",
                 FontSize = 11.5,
                 Foreground = BrushHex("#94A3B8"),
                 Margin = new Thickness(0, 2, 0, 0)
             };
-            lanIpStack.Children.Add(_lanIpValueText);
-            lanIpStack.Children.Add(_lanIpPortHint);
-            _lanIpBox.Child = lanIpStack;
+            lanIpStack.Children.Add(_lanIpText);
+            lanIpStack.Children.Add(_lanPortText);
+            lanIpBox.Child = lanIpStack;
+            lanStack.Children.Add(lanIpBox);
 
-            _pairCodeBig = new TextBlock
+            _lanAlertText = new TextBlock
+            {
+                Text = "",
+                FontSize = 11.5,
+                Foreground = BrushHex("#FCA5A5"),
+                TextWrapping = TextWrapping.Wrap,
+                Visibility = Visibility.Collapsed,
+                Margin = new Thickness(0, 2, 0, 4)
+            };
+            lanStack.Children.Add(_lanAlertText);
+
+            _lanPairBig = new TextBlock
             {
                 Text = "--- ---",
                 FontFamily = new FontFamily("Consolas"),
-                FontSize = 28,
+                FontSize = 24,
                 FontWeight = FontWeights.Bold,
-                Foreground = BrushHex("#5CE1E6"),
-                Margin = new Thickness(0, 10, 0, 6)
+                Foreground = BrushHex("#34D399"),
+                Margin = new Thickness(0, 6, 0, 4)
             };
-            _pairSubInfo = new TextBlock
+            _lanPairSub = new TextBlock
             {
-                Text = "正在读取配对信息...",
+                Text = "读取内网配对状态...",
                 FontSize = 12,
                 Foreground = BrushHex("#94A3B8"),
                 TextWrapping = TextWrapping.Wrap
             };
-            var pairBtns = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
-            _btnCopyOrNewCode = MakeSmallButton("复制配对码");
-            _btnCopyOrNewCode.Click += (s, e) =>
+            lanStack.Children.Add(_lanPairBig);
+            lanStack.Children.Add(_lanPairSub);
+
+            var lanBtns = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+            _btnCopyLanIp = MakeSmallButton("复制本机 IP");
+            _btnCopyLanIp.Click += (s, e) =>
             {
-                string activeCode = _activeMode == "lan" ? _currentLanPairCode : _currentPairCode;
-                if (!string.IsNullOrEmpty(activeCode))
+                if (!string.IsNullOrEmpty(_currentLanIp))
                 {
-                    Clipboard.SetText(activeCode);
-                    _pairSubInfo.Text = "已复制 6 位配对码 " + activeCode + " 到剪贴板！";
+                    Clipboard.SetText(_currentLanIp);
+                    _lanPairSub.Text = "已复制本机局域网 IP (" + _currentLanIp + ") 到剪贴板";
                 }
-                else if (_activeMode == "lan")
+            };
+
+            _btnCopyLanCode = MakeSmallButton("复制内网码");
+            _btnCopyLanCode.Click += (s, e) =>
+            {
+                if (!string.IsNullOrEmpty(_currentLanPairCode))
                 {
-                    SendPost("/api/lan/new-pair-code");
+                    Clipboard.SetText(_currentLanPairCode);
+                    _lanPairSub.Text = "已复制内网 6 位配对码 " + _currentLanPairCode + " 到剪贴板！";
+                }
+            };
+
+            _btnRefreshLanCode = MakeSmallButton("生成/刷新内网码");
+            _btnRefreshLanCode.Click += (s, e) => SendPost("/api/lan/new-pair-code");
+
+            _btnUnpairLan = MakeSmallButton("解绑内网设备");
+            _btnUnpairLan.Click += (s, e) =>
+            {
+                if (MessageBox.Show("确定要解除当前内网手机绑定并生成新的 6 位内网配对码吗？（不影响外网配对）", "解绑内网确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                {
+                    SendPost("/api/lan/unpair");
+                }
+            };
+
+            _btnToggleLan = MakeSmallButton("暂停内网监听");
+            _btnToggleLan.Click += (s, e) => ToggleLanListener();
+
+            _btnOpenFirewall = MakeSmallButton("防火墙设置");
+            _btnOpenFirewall.Click += (s, e) =>
+            {
+                try { Process.Start(new ProcessStartInfo("firewall.cpl") { UseShellExecute = true }); }
+                catch { }
+            };
+
+            lanBtns.Children.Add(_btnCopyLanIp);
+            lanBtns.Children.Add(_btnCopyLanCode);
+            lanBtns.Children.Add(_btnRefreshLanCode);
+            lanBtns.Children.Add(_btnUnpairLan);
+            lanBtns.Children.Add(_btnToggleLan);
+            lanBtns.Children.Add(_btnOpenFirewall);
+            lanStack.Children.Add(lanBtns);
+
+            _lanCardBorder.Child = lanStack;
+            Grid.SetColumn(_lanCardBorder, 0);
+            dualGrid.Children.Add(_lanCardBorder);
+
+            // ── Right Card: WAN Relay Channel (WSS) ──
+            _wanCardBorder = MakeCard();
+            var wanStack = new StackPanel();
+
+            var wanTopRow = new DockPanel();
+            _wanRttBadge = new TextBlock
+            {
+                Text = "-- ms",
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = BrushHex("#60A5FA"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            DockPanel.SetDock(_wanRttBadge, Dock.Right);
+            wanTopRow.Children.Add(_wanRttBadge);
+
+            var wanTitleRow = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+            _wanDot = new System.Windows.Shapes.Ellipse
+            {
+                Width = 11,
+                Height = 11,
+                Fill = BrushHex("#38BDF8"),
+                Margin = new Thickness(0, 0, 8, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            _wanStateTitle = new TextBlock
+            {
+                Text = "🌐 外网中继通道（默认常开）",
+                FontSize = 15.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = BrushHex("#F1F5F9")
+            };
+            wanTitleRow.Children.Add(_wanDot);
+            wanTitleRow.Children.Add(_wanStateTitle);
+            wanTopRow.Children.Add(wanTitleRow);
+            wanStack.Children.Add(wanTopRow);
+
+            var wanUrlBoxBorder = new Border
+            {
+                Background = BrushHex("#0B1320"),
+                BorderBrush = BrushHex("#1E293B"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(0, 10, 0, 6)
+            };
+            var wanUrlInfoStack = new StackPanel();
+            _wanEndpointText = new TextBlock
+            {
+                Text = "中继地址：读取中...",
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = BrushHex("#93C5FD"),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            _wanStateSub = new TextBlock
+            {
+                Text = "检测外网中继连接状态...",
+                FontSize = 11.5,
+                Foreground = BrushHex("#94A3B8"),
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            wanUrlInfoStack.Children.Add(_wanEndpointText);
+            wanUrlInfoStack.Children.Add(_wanStateSub);
+            wanUrlBoxBorder.Child = wanUrlInfoStack;
+            wanStack.Children.Add(wanUrlBoxBorder);
+
+            _wanPairBig = new TextBlock
+            {
+                Text = "--- ---",
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 24,
+                FontWeight = FontWeights.Bold,
+                Foreground = BrushHex("#60A5FA"),
+                Margin = new Thickness(0, 6, 0, 4)
+            };
+            _wanPairSub = new TextBlock
+            {
+                Text = "读取外网配对状态...",
+                FontSize = 12,
+                Foreground = BrushHex("#94A3B8"),
+                TextWrapping = TextWrapping.Wrap
+            };
+            wanStack.Children.Add(_wanPairBig);
+            wanStack.Children.Add(_wanPairSub);
+
+            var wanBtns = new WrapPanel { Margin = new Thickness(0, 10, 0, 0) };
+            _btnCopyWanCode = MakeSmallButton("复制外网码");
+            _btnCopyWanCode.Click += (s, e) =>
+            {
+                if (!string.IsNullOrEmpty(_currentWanPairCode))
+                {
+                    Clipboard.SetText(_currentWanPairCode);
+                    _wanPairSub.Text = "已复制外网 6 位配对码 " + _currentWanPairCode + " 到剪贴板！";
                 }
                 else
                 {
@@ -716,54 +644,66 @@ namespace ClawBridgeDesktop
                 }
             };
 
-            _btnRefreshLanCode = MakeSmallButton("↻ 刷新内网配对码");
-            _btnRefreshLanCode.Visibility = Visibility.Collapsed;
-            _btnRefreshLanCode.Click += (s, e) => SendPost("/api/lan/new-pair-code");
-
-            _btnUnpair = MakeSmallButton("刷新配对码 / 重新绑定");
-            _btnUnpair.Click += (s, e) =>
+            _btnUnpairWan = MakeSmallButton("刷新码/重绑外网");
+            _btnUnpairWan.Click += (s, e) =>
             {
-                if (_activeMode == "lan")
+                if (MessageBox.Show("确定要重新生成外网 6 位配对码吗？（若当前已绑定外网手机，将解除旧外网绑定，不影响内网配对）", "重绑外网确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                 {
-                    if (MessageBox.Show("确定要重置内网配对并签发新的 6 位内网配对码吗？（不影响外网中继配对）", "重置内网配对确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-                    {
-                        SendPost("/api/lan/unpair");
-                    }
-                }
-                else
-                {
-                    if (MessageBox.Show("确定要重新生成外网 6 位配对码吗？（若当前已绑定手机，将解除旧外网绑定，不影响内网配对）", "重新配对确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-                    {
-                        SendPost("/api/unpair");
-                        SendPost("/api/new-pair-code");
-                    }
+                    SendPost("/api/unpair");
+                    SendPost("/api/new-pair-code");
                 }
             };
-            pairBtns.Children.Add(_btnCopyOrNewCode);
-            pairBtns.Children.Add(_btnRefreshLanCode);
-            pairBtns.Children.Add(_btnUnpair);
 
-            pairStack.Children.Add(_pairHeader);
-            pairStack.Children.Add(_lanIpBox);
-            pairStack.Children.Add(_pairCodeBig);
-            pairStack.Children.Add(_pairSubInfo);
-            pairStack.Children.Add(pairBtns);
-            pairCard.Child = pairStack;
-            Grid.SetColumn(pairCard, 0);
-            midGrid.Children.Add(pairCard);
+            _btnWanConnect = MakeSmallButton("▶ 连接外网");
+            _btnWanConnect.Click += (s, e) => SendPost("/api/connect");
 
-            // Right: Quota & Antigravity Status Card
+            _btnWanDisconnect = MakeSmallButton("■ 暂停外网");
+            _btnWanDisconnect.Click += (s, e) => SendPost("/api/disconnect");
+
+            _btnWanReconnect = MakeSmallButton("↻ 重连外网");
+            _btnWanReconnect.Click += (s, e) => SendPost("/api/reconnect");
+
+            wanBtns.Children.Add(_btnCopyWanCode);
+            wanBtns.Children.Add(_btnUnpairWan);
+            wanBtns.Children.Add(_btnWanConnect);
+            wanBtns.Children.Add(_btnWanDisconnect);
+            wanBtns.Children.Add(_btnWanReconnect);
+            wanStack.Children.Add(wanBtns);
+
+            _wanCardBorder.Child = wanStack;
+            Grid.SetColumn(_wanCardBorder, 2);
+            dualGrid.Children.Add(_wanCardBorder);
+
+            stack.Children.Add(dualGrid);
+
+            // ── 2. Quota & Antigravity Local Channel Card ──
             var quotaCard = MakeCard();
+            quotaCard.Margin = new Thickness(0, 14, 0, 0);
             var quotaStack = new StackPanel();
             var quotaHeaderRow = new DockPanel();
+
+            var quotaBtnsRight = new StackPanel { Orientation = Orientation.Horizontal };
             var btnRefreshQuota = MakeSmallButton("刷新配额");
-            btnRefreshQuota.Margin = new Thickness(0);
+            btnRefreshQuota.Margin = new Thickness(0, 0, 8, 0);
             btnRefreshQuota.Click += (s, e) => SendPost("/api/refresh-quota");
-            DockPanel.SetDock(btnRefreshQuota, Dock.Right);
-            quotaHeaderRow.Children.Add(btnRefreshQuota);
+
+            var btnRestartCdp = MakeSmallButton("以 9222 调试模式重启 Antigravity (可选兜底)");
+            btnRestartCdp.Margin = new Thickness(0);
+            btnRestartCdp.Click += (s, e) =>
+            {
+                if (MessageBox.Show("确定要重启当前 Antigravity 并附加 --remote-debugging-port=9222 调试端口吗？\n（平时 agentapi 主通道已可直接双向收发，无需重启）", "重启接管确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                {
+                    SendPost("/api/launch-antigravity-cdp");
+                }
+            };
+            quotaBtnsRight.Children.Add(btnRefreshQuota);
+            quotaBtnsRight.Children.Add(btnRestartCdp);
+            DockPanel.SetDock(quotaBtnsRight, Dock.Right);
+            quotaHeaderRow.Children.Add(quotaBtnsRight);
+
             quotaHeaderRow.Children.Add(new TextBlock
             {
-                Text = "模型配额与本机通道",
+                Text = "模型配额与本机 AI 引擎通道",
                 FontSize = 15,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F1F5F9"),
@@ -778,68 +718,58 @@ namespace ClawBridgeDesktop
                 FontWeight = FontWeights.SemiBold,
                 Margin = new Thickness(0, 8, 0, 6)
             };
+
+            var quotaItemsWrap = new WrapPanel();
             _quotaGeminiText = new TextBlock
             {
                 Text = "Gemini：5h --% · 7d --%",
                 FontFamily = new FontFamily("Consolas"),
                 FontSize = 13,
                 Foreground = BrushHex("#E2E8F0"),
-                Margin = new Thickness(0, 2, 0, 4)
+                Margin = new Thickness(0, 0, 24, 4)
             };
             _quotaClaudeText = new TextBlock
             {
                 Text = "AGY 附赠池：5h --% · 7d --%",
                 FontFamily = new FontFamily("Consolas"),
-                FontSize = 12.5,
+                FontSize = 13,
                 Foreground = BrushHex("#E2E8F0"),
-                Margin = new Thickness(0, 0, 0, 4)
+                Margin = new Thickness(0, 0, 24, 4)
             };
             _quotaCodexText = new TextBlock
             {
                 Text = "Codex(OpenAI)：5h --% · 7d --%",
                 FontFamily = new FontFamily("Consolas"),
-                FontSize = 12.5,
+                FontSize = 13,
                 Foreground = BrushHex("#C4B5FD"),
-                Margin = new Thickness(0, 0, 0, 8)
+                Margin = new Thickness(0, 0, 0, 4)
             };
+            quotaItemsWrap.Children.Add(_quotaGeminiText);
+            quotaItemsWrap.Children.Add(_quotaClaudeText);
+            quotaItemsWrap.Children.Add(_quotaCodexText);
+
             _cdpText = new TextBlock
             {
-                Text = "通道：实时 Transcript 镜像运行中",
+                Text = "本机通道：实时 Transcript 镜像运行中",
                 FontSize = 11.5,
                 Foreground = BrushHex("#94A3B8"),
-                TextWrapping = TextWrapping.Wrap
-            };
-
-            var btnRestartCdp = MakeSmallButton("以 9222 调试模式重启 Antigravity (可选兜底)");
-            btnRestartCdp.Margin = new Thickness(0, 6, 0, 0);
-            btnRestartCdp.Click += (s, e) =>
-            {
-                if (MessageBox.Show("确定要重启当前 Antigravity 并附加 --remote-debugging-port=9222 调试端口吗？\n（平时 agentapi 主通道已可直接双向收发，无需重启；仅需 DOM 级控制时使用）", "重启接管确认", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-                {
-                    SendPost("/api/launch-antigravity-cdp");
-                }
+                Margin = new Thickness(0, 4, 0, 0)
             };
 
             quotaStack.Children.Add(quotaHeaderRow);
             quotaStack.Children.Add(_quotaPlanText);
-            quotaStack.Children.Add(_quotaGeminiText);
-            quotaStack.Children.Add(_quotaClaudeText);
-            quotaStack.Children.Add(_quotaCodexText);
+            quotaStack.Children.Add(quotaItemsWrap);
             quotaStack.Children.Add(_cdpText);
-            quotaStack.Children.Add(btnRestartCdp);
             quotaCard.Child = quotaStack;
-            Grid.SetColumn(quotaCard, 2);
-            midGrid.Children.Add(quotaCard);
-
-            stack.Children.Add(midGrid);
+            stack.Children.Add(quotaCard);
 
             // ── 3. WAN Relay URL Configuration Card ──
-            _wanRelayCfgCard = MakeCard();
-            _wanRelayCfgCard.Margin = new Thickness(0, 14, 0, 0);
+            var cfgCard = MakeCard();
+            cfgCard.Margin = new Thickness(0, 14, 0, 0);
             var cfgStack = new StackPanel();
             cfgStack.Children.Add(new TextBlock
             {
-                Text = "外网中继地址（支持直接填 VPS 公网 IPv4:端口 免域名直连，如仅用内网模式可不填）",
+                Text = "外网中继服务器地址（支持直接填 VPS 公网 IPv4:端口 免域名直连，仅用内网可不填）",
                 FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F1F5F9"),
@@ -847,7 +777,7 @@ namespace ClawBridgeDesktop
             });
             cfgStack.Children.Add(new TextBlock
             {
-                Text = "示例：直接填 203.0.113.10:8443（自动补全 wss:// 并适配自签加密证书），或填域名 wss://relay.yourdomain.com",
+                Text = "示例：直接填 203.0.113.10:8443（自动补全 wss:// 并开启自签 TLS 兼容），或填域名 wss://relay.yourdomain.com",
                 FontSize = 11.5,
                 Foreground = BrushHex("#94A3B8"),
                 Margin = new Thickness(0, 0, 0, 8)
@@ -929,16 +859,16 @@ namespace ClawBridgeDesktop
 
             cfgStack.Children.Add(cfgRow);
             cfgStack.Children.Add(_chkTrustSelfSigned);
-            _wanRelayCfgCard.Child = cfgStack;
-            stack.Children.Add(_wanRelayCfgCard);
+            cfgCard.Child = cfgStack;
+            stack.Children.Add(cfgCard);
 
-            // ── 3.5 Push Notification & Offline Queue Test Card ──
+            // ── 3.5 Push Notification Test Card ──
             var testCard = MakeCard();
             testCard.Margin = new Thickness(0, 14, 0, 0);
             var testStack = new StackPanel();
             testStack.Children.Add(new TextBlock
             {
-                Text = "手机推送联调与离线暂存测试（内网 / 外网双模式通用）",
+                Text = "手机推送联调测试（自动走手机当前在线通道：内网直连优先，外网兜底缓冲）",
                 FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F1F5F9"),
@@ -982,7 +912,7 @@ namespace ClawBridgeDesktop
             });
             _logBox = new TextBox
             {
-                Height = 155,
+                Height = 145,
                 IsReadOnly = true,
                 TextWrapping = TextWrapping.NoWrap,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -1009,9 +939,9 @@ namespace ClawBridgeDesktop
             {
                 Background = BrushHex("#131A26"),
                 BorderBrush = BrushHex("#1E293B"),
-                BorderThickness = new Thickness(1),
+                BorderThickness = new Thickness(1.2),
                 CornerRadius = new CornerRadius(12),
-                Padding = new Thickness(16)
+                Padding = new Thickness(15)
             };
         }
 
@@ -1020,12 +950,12 @@ namespace ClawBridgeDesktop
             return new Button
             {
                 Content = label,
-                Padding = new Thickness(16, 8, 16, 8),
+                Padding = new Thickness(14, 7, 14, 7),
                 Margin = new Thickness(0, 0, 10, 0),
                 Background = BrushHex(bgHex),
                 Foreground = BrushHex(fgHex),
                 BorderThickness = new Thickness(0),
-                FontSize = 13.5,
+                FontSize = 13,
                 FontWeight = bold ? FontWeights.Bold : FontWeights.Medium,
                 Cursor = Cursors.Hand
             };
@@ -1036,13 +966,13 @@ namespace ClawBridgeDesktop
             return new Button
             {
                 Content = label,
-                Padding = new Thickness(10, 5, 10, 5),
-                Margin = new Thickness(0, 0, 8, 4),
+                Padding = new Thickness(9, 5, 9, 5),
+                Margin = new Thickness(0, 0, 6, 5),
                 Background = BrushHex("#1E293B"),
                 Foreground = BrushHex("#E2E8F0"),
                 BorderBrush = BrushHex("#334155"),
                 BorderThickness = new Thickness(1),
-                FontSize = 12,
+                FontSize = 11.5,
                 Cursor = Cursors.Hand
             };
         }
@@ -1176,12 +1106,12 @@ namespace ClawBridgeDesktop
                     var httpResp = wex.Response as HttpWebResponse;
                     if (httpResp != null && httpResp.StatusCode == HttpStatusCode.Forbidden)
                     {
-                        Dispatcher.BeginInvoke(new Action(() => ShowBackendStarting("本地 IPC 令牌校验未匹配，重试中...")));
+                        Dispatcher.BeginInvoke(new Action(() => ShowBackendStarting("本地 IPC 令牌校验同步中...")));
                     }
                     else
                     {
                         EnsureBackendRunning();
-                        Dispatcher.BeginInvoke(new Action(() => ShowBackendStarting("本地服务自检中，正在静默拉起后台引擎...")));
+                        Dispatcher.BeginInvoke(new Action(() => ShowBackendStarting("本地守护进程启动中，通常仅需 1~2 秒...")));
                     }
                 }
                 catch (Exception ex)
@@ -1192,40 +1122,36 @@ namespace ClawBridgeDesktop
             });
         }
 
-        private void ShowBackendStarting(string detail = "本地服务自检中，通常仅需 1~2 秒")
+        private void ShowBackendStarting(string detail)
         {
-            _statusDot.Fill = BrushHex("#FACC15");
-            _statusTitle.Text = "正在启动桌面桥后台引擎...";
-            _statusSubtitle.Text = detail;
-            _rttBadge.Text = "-- ms";
+            _heroDot.Fill = BrushHex("#FACC15");
+            _heroTitle.Text = "正在启动桌面桥后台引擎...";
+            _heroSubtitle.Text = detail;
         }
 
         private void ApplyStatus(Dictionary<string, object> d)
         {
-            string modeRaw = GetStr(d, "connectionMode");
-            bool lanEnabled = GetBool(d, "lanEnabled") || string.Equals(modeRaw, "lan", StringComparison.OrdinalIgnoreCase);
-            _activeMode = lanEnabled ? "lan" : "wan";
-
             // WAN fields
-            bool manualPaused = GetBool(d, "manualPaused");
-            bool connected = GetBool(d, "connected");
-            bool authenticated = GetBool(d, "authenticated");
-            bool paired = GetBool(d, "paired");
-            bool peerOnline = GetBool(d, "peerOnline");
-            string pairedName = GetStr(d, "pairedDeviceName");
+            bool wanManualPaused = GetBool(d, "manualPaused");
+            bool wanConnected = GetBool(d, "connected");
+            bool wanAuthenticated = GetBool(d, "authenticated");
+            bool wanPaired = GetBool(d, "paired");
+            bool wanPeerOnline = GetBool(d, "peerOnline");
+            string wanPairedName = GetStr(d, "pairedDeviceName");
             string relayUrl = GetStr(d, "relayUrl");
             bool trustSelfSigned = GetBool(d, "trustSelfSigned");
-            string pairCode = GetStr(d, "pairingCode");
-            long pairExp = GetLong(d, "pairingExpiresAt");
-            int rtt = GetInt(d, "lastRttMs", -1);
+            string wanPairCode = GetStr(d, "pairingCode");
+            long wanPairExp = GetLong(d, "pairingExpiresAt");
+            int wanRtt = GetInt(d, "lastRttMs", -1);
+            bool wanUnconfigured = string.IsNullOrEmpty(relayUrl) || relayUrl.IndexOf("example.com", StringComparison.OrdinalIgnoreCase) >= 0;
 
             // LAN fields
+            bool lanEnabled = GetBool(d, "lanEnabled");
             bool lanRunning = GetBool(d, "lanRunning");
             int lanPort = GetInt(d, "lanPort", 18791);
             int lanDiscoveryPort = GetInt(d, "lanDiscoveryPort", 18792);
             string lanPrimaryIp = GetStr(d, "lanPrimaryIp");
             string lanBindError = GetStr(d, "lanBindError");
-            string lanUdpWarning = GetStr(d, "lanUdpWarning");
             bool lanPaired = GetBool(d, "lanPaired");
             string lanPairedName = GetStr(d, "lanPairedDeviceName");
             string lanPhoneIp = GetStr(d, "lanConnectedPhoneIp");
@@ -1246,7 +1172,8 @@ namespace ClawBridgeDesktop
             }
             string allIpsText = allIpsList.Count > 0 ? string.Join(" / ", allIpsList.ToArray()) : lanPrimaryIp;
 
-            _currentPairCode = pairCode;
+            _lanCurrentlyEnabled = lanEnabled;
+            _currentWanPairCode = wanPairCode;
             _currentLanPairCode = lanPairCode;
             _currentLanIp = lanPrimaryIp;
 
@@ -1257,365 +1184,227 @@ namespace ClawBridgeDesktop
                 _chkTrustSelfSigned.IsChecked = trustSelfSigned;
             }
 
-            // ── Update Top Big Segmented Switch ──
-            _trayModeLanItem.Checked = lanEnabled;
-            _trayModeWanItem.Checked = !lanEnabled;
+            // ── 0. Top Dual-Channel Overview Banner ──
+            bool bothOpen = lanRunning && (!wanManualPaused || wanUnconfigured);
+            _btnRestoreDual.Visibility = bothOpen ? Visibility.Collapsed : Visibility.Visible;
 
-            if (lanEnabled)
+            if (lanPeerOnline)
             {
-                _segLanBorder.Background = BrushHex("#0F766E");
-                _segLanBorder.BorderBrush = BrushHex("#2DD4BF");
-                _segLanTitle.Foreground = BrushHex("#FFFFFF");
-                _segLanSub.Foreground = BrushHex("#CCFBF1");
-
-                if (!string.IsNullOrEmpty(lanBindError))
-                {
-                    _segLanDot.Fill = BrushHex("#EF4444");
-                    _segLanSub.Text = "端口绑定失败 · 点击重试";
-                }
-                else if (lanRunning && lanPeerOnline)
-                {
-                    _segLanDot.Fill = BrushHex("#22C55E");
-                    _segLanSub.Text = "服务已开启 · 手机已直连 (" + (string.IsNullOrEmpty(lanPhoneIp) ? "局域网" : lanPhoneIp) + ")";
-                }
-                else if (lanRunning)
-                {
-                    _segLanDot.Fill = BrushHex("#38BDF8");
-                    _segLanSub.Text = "服务已开启 · 等待手机局域网直连";
-                }
-                else
-                {
-                    _segLanDot.Fill = BrushHex("#F59E0B");
-                    _segLanSub.Text = "服务已暂停 · 点击下方启动";
-                }
-
-                _segWanBorder.Background = BrushHex("#131C2E");
-                _segWanBorder.BorderBrush = BrushHex("#1E293B");
-                _segWanTitle.Foreground = BrushHex("#94A3B8");
-                _segWanSub.Foreground = BrushHex("#64748B");
-                _segWanDot.Fill = BrushHex("#475569");
-                _segWanSub.Text = "已停用（点击一键切回外网中继）";
+                _heroDot.Fill = BrushHex("#22C55E");
+                _heroBannerBorder.BorderBrush = BrushHex("#2DD4BF");
+                string rttNote = lanRtt >= 0 ? (" · 延迟 " + lanRtt + " ms") : "";
+                _heroTitle.Text = "手机当前走【⚡ 内网直连】在线 · " + (string.IsNullOrEmpty(lanPairedName) ? "局域网手机" : lanPairedName) + rttNote;
+                _heroSubtitle.Text = "电脑双通道同时常开待命：在家用内网极速直连 (" + lanPhoneIp + ")，出门在手机端直接切「外网中继」即可无缝接管，电脑无需任何操作";
+                _trayIcon.Text = "ClawBridge · 手机内网直连在线";
+            }
+            else if (wanPeerOnline && wanPaired)
+            {
+                _heroDot.Fill = BrushHex("#22C55E");
+                _heroBannerBorder.BorderBrush = BrushHex("#60A5FA");
+                string rttNote = wanRtt >= 0 ? (" · 延迟 " + wanRtt + " ms") : "";
+                _heroTitle.Text = "手机当前走【🌐 外网中继】在线 · " + (string.IsNullOrEmpty(wanPairedName) ? "远程手机" : wanPairedName) + rttNote;
+                _heroSubtitle.Text = "电脑双通道同时常开待命：回到同一 WiFi 后在手机端点击「内网直连」即可切换至局域网毫秒级通道，电脑无需任何操作";
+                _trayIcon.Text = "ClawBridge · 手机外网中继在线";
+            }
+            else if (lanRunning && wanConnected && wanAuthenticated)
+            {
+                _heroDot.Fill = BrushHex("#38BDF8");
+                _heroBannerBorder.BorderBrush = BrushHex("#38BDF8");
+                _heroTitle.Text = "⚡ 内网直连 + 🌐 外网中继 双通道已同时开启待命";
+                _heroSubtitle.Text = "监听内网 " + (string.IsNullOrEmpty(lanPrimaryIp) ? "0.0.0.0" : lanPrimaryIp) + ":" + lanPort + " 与外网中继；手机端随时任选内网或外网访问";
+                _trayIcon.Text = "ClawBridge · 双通道同时待命";
+            }
+            else if (lanRunning)
+            {
+                _heroDot.Fill = BrushHex("#38BDF8");
+                _heroBannerBorder.BorderBrush = BrushHex("#2DD4BF");
+                _heroTitle.Text = "⚡ 内网直连监听就绪（" + (wanUnconfigured ? "外网中继未配置，纯内网独立待命" : "外网中继连接中/已暂停") + "）";
+                _heroSubtitle.Text = "同一 WiFi 下手机打开 App 切至「内网直连」即可连接本机 " + lanPrimaryIp + ":" + lanPort;
+                _trayIcon.Text = "ClawBridge · 内网直连待命";
             }
             else
             {
-                _segWanBorder.Background = BrushHex("#1D4ED8");
-                _segWanBorder.BorderBrush = BrushHex("#60A5FA");
-                _segWanTitle.Foreground = BrushHex("#FFFFFF");
-                _segWanSub.Foreground = BrushHex("#DBEAFE");
-
-                if (manualPaused)
-                {
-                    _segWanDot.Fill = BrushHex("#94A3B8");
-                    _segWanSub.Text = "外网中继 · 已手动断开";
-                }
-                else if (connected && authenticated && peerOnline)
-                {
-                    _segWanDot.Fill = BrushHex("#22C55E");
-                    _segWanSub.Text = "中继已连接 · 手机在线";
-                }
-                else if (connected && authenticated)
-                {
-                    _segWanDot.Fill = BrushHex("#38BDF8");
-                    _segWanSub.Text = "中继已连接 · 等待手机上线";
-                }
-                else
-                {
-                    _segWanDot.Fill = BrushHex("#F59E0B");
-                    _segWanSub.Text = "中继未连接 · 正在重连...";
-                }
-
-                _segLanBorder.Background = BrushHex("#131C2E");
-                _segLanBorder.BorderBrush = BrushHex("#1E293B");
-                _segLanTitle.Foreground = BrushHex("#94A3B8");
-                _segLanSub.Foreground = BrushHex("#64748B");
-                _segLanDot.Fill = BrushHex("#475569");
-                _segLanSub.Text = "未开启（点击切换局域网极速直连）";
+                _heroDot.Fill = BrushHex("#F59E0B");
+                _heroBannerBorder.BorderBrush = BrushHex("#F59E0B");
+                _heroTitle.Text = "部分监听通道已暂停";
+                _heroSubtitle.Text = "点击右侧「⚡+🌐 恢复双通道全开」即可同时开启内网直连与外网中继监听";
+                _trayIcon.Text = "ClawBridge · 部分通道已暂停";
             }
 
-            // ── Update LAN Mode vs WAN Mode Hero & Pairing Panels ──
-            if (lanEnabled)
+            // ── 1A. Left Card: LAN Direct Status ──
+            _lanRttBadge.Text = (lanRunning && lanPeerOnline && lanRtt >= 0) ? (lanRtt + " ms") : "-- ms";
+            _lanIpText.Text = string.IsNullOrEmpty(allIpsText) ? "本机局域网 IP：未检测到局域网网卡" : ("本机局域网 IP：" + allIpsText);
+            _lanPortText.Text = string.Format("WebSocket 监听：{0}  ·  UDP 自动发现：{1}", lanPort, lanDiscoveryPort);
+            _btnCopyLanIp.Visibility = string.IsNullOrEmpty(lanPrimaryIp) ? Visibility.Collapsed : Visibility.Visible;
+            _btnToggleLan.Content = lanEnabled ? "暂停内网监听" : "▶ 开启内网监听";
+            _trayLanToggleItem.Text = lanEnabled ? "暂停内网直连监听 (18791)" : "开启内网直连监听 (18791)";
+
+            if (!string.IsNullOrEmpty(lanBindError))
             {
-                _wanRelayCfgCard.Opacity = 0.6;
-                _lanIpBox.Visibility = Visibility.Visible;
-                _btnCopyLanIp.Visibility = string.IsNullOrEmpty(lanPrimaryIp) ? Visibility.Collapsed : Visibility.Visible;
-
-                _lanIpValueText.Text = string.IsNullOrEmpty(allIpsText)
-                    ? "本机局域网 IP：未检测到活动局域网网卡"
-                    : ("本机局域网 IP：" + allIpsText);
-                _lanIpPortHint.Text = string.Format("WebSocket 端口：{0}  ·  UDP 自动发现端口：{1}", lanPort, lanDiscoveryPort);
-
-                // Alert Banner: Port Error OR Firewall Guidance
-                if (!string.IsNullOrEmpty(lanBindError))
-                {
-                    _lanAlertCard.Visibility = Visibility.Visible;
-                    _lanAlertCard.Background = BrushHex("#2A1215");
-                    _lanAlertCard.BorderBrush = BrushHex("#EF4444");
-                    _lanAlertTitle.Foreground = BrushHex("#FCA5A5");
-                    _lanAlertTitle.Text = "⚠️ 内网直连端口绑定失败";
-                    _lanAlertBody.Text = lanBindError + "；若被防火墙拦截，请在 Windows 防火墙放行 ClawBridge (Node.js) 的专用网络入站。";
-
-                    if (_lastShownBindError != lanBindError)
-                    {
-                        _lastShownBindError = lanBindError;
-                    }
-                }
-                else if (!string.IsNullOrEmpty(lanUdpWarning))
-                {
-                    _lanAlertCard.Visibility = Visibility.Visible;
-                    _lanAlertCard.Background = BrushHex("#292012");
-                    _lanAlertCard.BorderBrush = BrushHex("#F59E0B");
-                    _lanAlertTitle.Foreground = BrushHex("#FDE68A");
-                    _lanAlertTitle.Text = "⚠️ 局域网自动发现受限";
-                    _lanAlertBody.Text = lanUdpWarning + "。手机端可直接手动输入本机 IP " + lanPrimaryIp + " 直连，或在 Windows 防火墙放行专用网络入站。";
-                }
-                else if (lanRunning && !lanPeerOnline)
-                {
-                    _lanAlertCard.Visibility = Visibility.Visible;
-                    _lanAlertCard.Background = BrushHex("#0F1E2E");
-                    _lanAlertCard.BorderBrush = BrushHex("#0284C7");
-                    _lanAlertTitle.Foreground = BrushHex("#7DD3FC");
-                    _lanAlertTitle.Text = "💡 内网直连就绪提示";
-                    _lanAlertBody.Text = "请确认手机与电脑连接同一路由器/WiFi，并在手机端顶部切至「内网直连」。若手机发现超时，请在 Windows 防火墙放行 Node.js 的专用网络入站（TCP " + lanPort + " / UDP " + lanDiscoveryPort + "）或在手机端手动输入 IP " + (string.IsNullOrEmpty(lanPrimaryIp) ? "" : lanPrimaryIp) + "。";
-                }
-                else
-                {
-                    _lanAlertCard.Visibility = Visibility.Collapsed;
-                    _lastShownBindError = "";
-                }
-
-                // Hero Card in LAN Mode
-                _rttBadge.Text = (lanRunning && lanPeerOnline && lanRtt >= 0) ? (lanRtt + " ms") : "-- ms";
-                _btnConnect.Content = "▶ 启动内网监听";
-                _btnDisconnect.Content = "■ 停止监听";
-                _btnReconnect.Content = "↻ 重启内网服务";
-
-                if (!string.IsNullOrEmpty(lanBindError))
-                {
-                    _statusDot.Fill = BrushHex("#EF4444");
-                    _statusTitle.Text = "内网服务启动失败";
-                    _statusSubtitle.Text = lanBindError;
-                    _btnConnect.IsEnabled = true;
-                    _btnConnect.Opacity = 1.0;
-                    _btnDisconnect.IsEnabled = false;
-                    _btnDisconnect.Opacity = 0.45;
-                    _trayIcon.Text = "ClawBridge · 内网端口异常";
-                }
-                else if (lanRunning && lanPeerOnline)
-                {
-                    _statusDot.Fill = BrushHex("#22C55E");
-                    _statusTitle.Text = "内网直连已建立 · 手机实时在线";
-                    string peerModeNote = string.IsNullOrEmpty(peerMode) ? "" : (" · 对端模式：" + peerMode.ToUpperInvariant());
-                    _statusSubtitle.Text = string.Format("直连设备：{0} ({1}) · 本机 {2}:{3}{4}",
-                        string.IsNullOrEmpty(lanPairedName) ? "局域网手机" : lanPairedName,
-                        string.IsNullOrEmpty(lanPhoneIp) ? "LAN" : lanPhoneIp,
-                        string.IsNullOrEmpty(lanPrimaryIp) ? "0.0.0.0" : lanPrimaryIp,
-                        lanPort,
-                        peerModeNote);
-                    _btnConnect.IsEnabled = false;
-                    _btnConnect.Opacity = 0.45;
-                    _btnDisconnect.IsEnabled = true;
-                    _btnDisconnect.Opacity = 1.0;
-                    _trayIcon.Text = "ClawBridge · 内网直连 (手机在线)";
-                }
-                else if (lanRunning)
-                {
-                    _statusDot.Fill = BrushHex("#38BDF8");
-                    _statusTitle.Text = lanPaired ? "内网服务已开启 · 等待已配对手机直连" : "内网服务已开启 · 等待手机输入内网配对码";
-                    _statusSubtitle.Text = string.Format("监听 ws://{0}:{1}（不经过外网中继，外网断开亦可正常收发）",
-                        string.IsNullOrEmpty(lanPrimaryIp) ? "0.0.0.0" : lanPrimaryIp, lanPort);
-                    _btnConnect.IsEnabled = false;
-                    _btnConnect.Opacity = 0.45;
-                    _btnDisconnect.IsEnabled = true;
-                    _btnDisconnect.Opacity = 1.0;
-                    _trayIcon.Text = "ClawBridge · 内网直连待机";
-                }
-                else
-                {
-                    _statusDot.Fill = BrushHex("#64748B");
-                    _statusTitle.Text = "内网监听已手动停止";
-                    _statusSubtitle.Text = "点击「启动内网监听」恢复局域网服务，或点击顶部切回「外网中继」";
-                    _btnConnect.IsEnabled = true;
-                    _btnConnect.Opacity = 1.0;
-                    _btnDisconnect.IsEnabled = false;
-                    _btnDisconnect.Opacity = 0.45;
-                    _trayIcon.Text = "ClawBridge · 内网监听已停止";
-                }
-
-                _trayConnectItem.Enabled = _btnConnect.IsEnabled;
-                _trayDisconnectItem.Enabled = _btnDisconnect.IsEnabled;
-
-                // Pairing Card in LAN Mode
-                _pairHeader.Text = "内网直连配对与设备（与外网配对独立）";
-                _btnUnpair.Content = "解除内网绑定 / 重置";
-
-                bool hasActiveLanCode = !string.IsNullOrEmpty(lanPairCode) && lanPairCode.Length == 6;
-                if (hasActiveLanCode)
-                {
-                    _pairCodeBig.FontSize = 28;
-                    _pairCodeBig.Foreground = BrushHex("#34D399");
-                    _pairCodeBig.Text = lanPairCode.Substring(0, 3) + " " + lanPairCode.Substring(3, 3);
-                    long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    long remSec = Math.Max(0, (lanPairExp - nowMs) / 1000);
-                    string pairedExtra = lanPaired ? ("（原绑定：" + (string.IsNullOrEmpty(lanPairedName) ? "已配对手机" : lanPairedName) + "）") : "";
-                    _pairSubInfo.Text = string.Format("内网 6 位配对码剩余有效时间：{0:D2}:{1:D2} {2}", remSec / 60, remSec % 60, pairedExtra);
-                    _btnCopyOrNewCode.Content = "复制内网配对码";
-                    _btnCopyOrNewCode.Visibility = Visibility.Visible;
-                    _btnRefreshLanCode.Content = "↻ 刷新配对码";
-                    _btnRefreshLanCode.Visibility = lanRunning ? Visibility.Visible : Visibility.Collapsed;
-                }
-                else if (lanPaired)
-                {
-                    _pairCodeBig.Text = string.IsNullOrEmpty(lanPairedName) ? "已配对内网手机" : lanPairedName;
-                    _pairCodeBig.FontSize = 20;
-                    _pairCodeBig.Foreground = BrushHex("#22C55E");
-                    _pairSubInfo.Text = lanPeerOnline
-                        ? ("状态：🟢 局域网直连在线 (" + lanPhoneIp + ")，低延迟双向通信中")
-                        : "状态：⚪ 已完成内网配对，手机切至「内网直连」即可免输码秒连";
-                    _btnCopyOrNewCode.Visibility = Visibility.Collapsed;
-                    _btnRefreshLanCode.Content = "生成新配对码 (换机)";
-                    _btnRefreshLanCode.Visibility = lanRunning ? Visibility.Visible : Visibility.Collapsed;
-                }
-                else
-                {
-                    _pairCodeBig.FontSize = 24;
-                    _pairCodeBig.Foreground = BrushHex("#5CE1E6");
-                    _pairCodeBig.Text = lanRunning ? "生成中..." : "未启动";
-                    _pairSubInfo.Text = lanRunning ? "正在签发 6 位内网配对码..." : "请先启动内网监听以生成配对码";
-                    _btnCopyOrNewCode.Visibility = Visibility.Collapsed;
-                    _btnRefreshLanCode.Visibility = lanRunning ? Visibility.Visible : Visibility.Collapsed;
-                }
+                _lanDot.Fill = BrushHex("#EF4444");
+                _lanCardBorder.BorderBrush = BrushHex("#EF4444");
+                _lanStateTitle.Text = "⚡ 内网直连 · 端口异常";
+                _lanAlertText.Text = "⚠️ " + lanBindError;
+                _lanAlertText.Visibility = Visibility.Visible;
+            }
+            else if (lanRunning && lanPeerOnline)
+            {
+                _lanDot.Fill = BrushHex("#22C55E");
+                _lanCardBorder.BorderBrush = BrushHex("#2DD4BF");
+                _lanStateTitle.Text = "⚡ 内网直连 · 🟢 手机正在访问";
+                _lanAlertText.Visibility = Visibility.Collapsed;
+            }
+            else if (lanRunning)
+            {
+                _lanDot.Fill = BrushHex("#38BDF8");
+                _lanCardBorder.BorderBrush = BrushHex("#1E3A5F");
+                _lanStateTitle.Text = "⚡ 内网直连 · 监听待命中";
+                _lanAlertText.Visibility = Visibility.Collapsed;
             }
             else
             {
-                // ── WAN Relay Mode (Preserves 100% of existing WAN behavior) ──
-                _wanRelayCfgCard.Opacity = 1.0;
-                _lanAlertCard.Visibility = Visibility.Collapsed;
-                _lanIpBox.Visibility = Visibility.Collapsed;
-                _btnCopyLanIp.Visibility = Visibility.Collapsed;
-                _btnRefreshLanCode.Visibility = Visibility.Collapsed;
-
-                _btnConnect.Content = "▶ 连接中继";
-                _btnDisconnect.Content = "■ 断开连接";
-                _btnReconnect.Content = "↻ 立即重连";
-                _pairHeader.Text = "外网中继配对状态（与内网配对独立）";
-                _btnUnpair.Content = "刷新配对码 / 重新绑定";
-
-                _rttBadge.Text = (connected && rtt >= 0) ? (rtt + " ms") : "-- ms";
-
-                if (manualPaused)
-                {
-                    _statusDot.Fill = BrushHex("#64748B");
-                    _statusTitle.Text = "已手动断开外网中继";
-                    _statusSubtitle.Text = "当前已切断与中继服务器的通信（手机端将显示桌面离线）";
-                    _btnConnect.IsEnabled = true;
-                    _btnConnect.Opacity = 1.0;
-                    _btnDisconnect.IsEnabled = false;
-                    _btnDisconnect.Opacity = 0.45;
-                    _trayConnectItem.Enabled = true;
-                    _trayDisconnectItem.Enabled = false;
-                    _trayIcon.Text = "ClawBridge · 外网已手动断开";
-                }
-                else if (connected && authenticated)
-                {
-                    if (paired && peerOnline)
-                    {
-                        _statusDot.Fill = BrushHex("#22C55E");
-                        _statusTitle.Text = "已连接外网中继 · 手机实时在线";
-                        _statusSubtitle.Text = "已连通 " + relayUrl + " · 绑定设备：" + (string.IsNullOrEmpty(pairedName) ? "安卓手机" : pairedName);
-                        _trayIcon.Text = "ClawBridge · 外网已连接 (手机在线)";
-                    }
-                    else if (paired)
-                    {
-                        _statusDot.Fill = BrushHex("#38BDF8");
-                        _statusTitle.Text = "已连接外网中继 · 等待手机上线";
-                        _statusSubtitle.Text = "已连通 " + relayUrl + " · 手机打开 App 即刻同步";
-                        _trayIcon.Text = "ClawBridge · 外网已连接 (手机未在线)";
-                    }
-                    else
-                    {
-                        _statusDot.Fill = BrushHex("#FACC15");
-                        _statusTitle.Text = "已连接外网中继 · 等待配对绑定";
-                        _statusSubtitle.Text = "请在手机 App 外网模式下输入下方 6 位一次性配对码";
-                        _trayIcon.Text = "ClawBridge · 等待手机配对";
-                    }
-                    _btnConnect.IsEnabled = false;
-                    _btnConnect.Opacity = 0.45;
-                    _btnDisconnect.IsEnabled = true;
-                    _btnDisconnect.Opacity = 1.0;
-                    _trayConnectItem.Enabled = false;
-                    _trayDisconnectItem.Enabled = true;
-                }
-                else if (!string.IsNullOrEmpty(relayUrl) && relayUrl.IndexOf("example.com", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    _statusDot.Fill = BrushHex("#64748B");
-                    _statusTitle.Text = "外网中继尚未配置";
-                    _statusSubtitle.Text = "若在同一 WiFi 下，点击顶部「⚡ 内网直连」即可免服务器单独使用；如需外网远程，请在下方填入 VPS 公网 IP:端口";
-                    _btnConnect.IsEnabled = false;
-                    _btnConnect.Opacity = 0.45;
-                    _btnDisconnect.IsEnabled = false;
-                    _btnDisconnect.Opacity = 0.45;
-                    _trayConnectItem.Enabled = false;
-                    _trayDisconnectItem.Enabled = false;
-                    _trayIcon.Text = "ClawBridge · 待配置中继或切内网";
-                }
-                else
-                {
-                    _statusDot.Fill = BrushHex("#F59E0B");
-                    _statusTitle.Text = "正在连接外网中继服务器...";
-                    _statusSubtitle.Text = "目标：" + relayUrl;
-                    _btnConnect.IsEnabled = false;
-                    _btnConnect.Opacity = 0.45;
-                    _btnDisconnect.IsEnabled = true;
-                    _btnDisconnect.Opacity = 1.0;
-                    _trayConnectItem.Enabled = false;
-                    _trayDisconnectItem.Enabled = true;
-                    _trayIcon.Text = "ClawBridge · 正在连接中继...";
-                }
-
-                if (paired)
-                {
-                    _pairCodeBig.Text = string.IsNullOrEmpty(pairedName) ? "已绑定手机" : pairedName;
-                    _pairCodeBig.FontSize = 20;
-                    _pairCodeBig.Foreground = BrushHex("#22C55E");
-                    _pairSubInfo.Text = peerOnline ? "状态：🟢 手机当前在线，会话与配额实时同步中" : "状态：⚪ 手机暂未在前台，事件通知将经中继暂存推送";
-                    _btnCopyOrNewCode.Visibility = Visibility.Collapsed;
-                }
-                else
-                {
-                    _pairCodeBig.FontSize = 28;
-                    _pairCodeBig.Foreground = BrushHex("#5CE1E6");
-                    if (!string.IsNullOrEmpty(pairCode) && pairCode.Length == 6)
-                    {
-                        _pairCodeBig.Text = pairCode.Substring(0, 3) + " " + pairCode.Substring(3, 3);
-                        long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                        long remSec = Math.Max(0, (pairExp - nowMs) / 1000);
-                        _pairSubInfo.Text = string.Format("一次性配对码剩余有效时间：{0:D2}:{1:D2}", remSec / 60, remSec % 60);
-                        _btnCopyOrNewCode.Content = "复制配对码";
-                        _btnCopyOrNewCode.Visibility = Visibility.Visible;
-                    }
-                    else
-                    {
-                        _pairCodeBig.Text = manualPaused ? "已断开" : "生成中...";
-                        _pairSubInfo.Text = manualPaused ? "请先点击上方「连接中继」获取配对码" : "连接中继后自动签发 6 位配对码";
-                        _btnCopyOrNewCode.Visibility = Visibility.Collapsed;
-                    }
-                }
+                _lanDot.Fill = BrushHex("#64748B");
+                _lanCardBorder.BorderBrush = BrushHex("#1E293B");
+                _lanStateTitle.Text = "⚡ 内网直连 · 已暂停";
+                _lanAlertText.Visibility = Visibility.Collapsed;
             }
 
-            // Quota Card (Shared across both modes)
+            bool hasLanCode = !string.IsNullOrEmpty(lanPairCode) && lanPairCode.Length == 6;
+            if (hasLanCode)
+            {
+                _lanPairBig.FontSize = 25;
+                _lanPairBig.Foreground = BrushHex("#34D399");
+                _lanPairBig.Text = lanPairCode.Substring(0, 3) + " " + lanPairCode.Substring(3, 3);
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long remSec = Math.Max(0, (lanPairExp - nowMs) / 1000);
+                _lanPairSub.Text = string.Format("内网 6 位配对码有效倒计时：{0:D2}:{1:D2}", remSec / 60, remSec % 60);
+                _btnCopyLanCode.Visibility = Visibility.Visible;
+            }
+            else if (lanPaired)
+            {
+                _lanPairBig.FontSize = 18;
+                _lanPairBig.Foreground = BrushHex("#22C55E");
+                _lanPairBig.Text = "已配对：" + (string.IsNullOrEmpty(lanPairedName) ? "内网手机" : lanPairedName);
+                _lanPairSub.Text = lanPeerOnline
+                    ? ("🟢 正在通过局域网直连通信 (" + lanPhoneIp + ")")
+                    : "🔵 已绑定内网凭证，手机切至「内网直连」即刻秒连";
+                _btnCopyLanCode.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                _lanPairBig.FontSize = 20;
+                _lanPairBig.Foreground = BrushHex("#94A3B8");
+                _lanPairBig.Text = lanRunning ? "生成中..." : "监听未开启";
+                _lanPairSub.Text = lanRunning ? "正在生成 6 位内网配对码..." : "开启内网监听后自动生成配对码";
+                _btnCopyLanCode.Visibility = Visibility.Collapsed;
+            }
+            _btnRefreshLanCode.Visibility = lanRunning ? Visibility.Visible : Visibility.Collapsed;
+            _btnUnpairLan.Visibility = lanPaired ? Visibility.Visible : Visibility.Collapsed;
+
+            // ── 1B. Right Card: WAN Relay Status ──
+            _wanRttBadge.Text = (wanConnected && wanRtt >= 0) ? (wanRtt + " ms") : "-- ms";
+            _wanEndpointText.Text = wanUnconfigured ? "中继地址：未配置（仅用内网无需填写）" : ("中继：" + relayUrl);
+
+            if (wanUnconfigured)
+            {
+                _wanDot.Fill = BrushHex("#64748B");
+                _wanCardBorder.BorderBrush = BrushHex("#1E293B");
+                _wanStateTitle.Text = "🌐 外网中继 · 未配置";
+                _wanStateSub.Text = "如需 5G 跨网远程控制，请在下方填入 VPS 公网 IP:端口";
+                _btnWanConnect.IsEnabled = false;
+                _btnWanDisconnect.IsEnabled = false;
+                _trayWanConnectItem.Enabled = false;
+                _trayWanDisconnectItem.Enabled = false;
+            }
+            else if (wanManualPaused)
+            {
+                _wanDot.Fill = BrushHex("#64748B");
+                _wanCardBorder.BorderBrush = BrushHex("#1E293B");
+                _wanStateTitle.Text = "🌐 外网中继 · 已手动暂停";
+                _wanStateSub.Text = "点击「▶ 连接外网」即可恢复外网待命";
+                _btnWanConnect.IsEnabled = true;
+                _btnWanDisconnect.IsEnabled = false;
+                _trayWanConnectItem.Enabled = true;
+                _trayWanDisconnectItem.Enabled = false;
+            }
+            else if (wanConnected && wanAuthenticated)
+            {
+                if (wanPaired && wanPeerOnline && !lanPeerOnline)
+                {
+                    _wanDot.Fill = BrushHex("#22C55E");
+                    _wanCardBorder.BorderBrush = BrushHex("#60A5FA");
+                    _wanStateTitle.Text = "🌐 外网中继 · 🟢 手机正在访问";
+                    _wanStateSub.Text = "手机当前正通过外网加密通道实时连接";
+                }
+                else
+                {
+                    _wanDot.Fill = BrushHex("#38BDF8");
+                    _wanCardBorder.BorderBrush = BrushHex("#1E3A5F");
+                    _wanStateTitle.Text = "🌐 外网中继 · 已连接待命中";
+                    _wanStateSub.Text = lanPeerOnline
+                        ? "外网通道保持后台待命（当前手机正在走内网直连）"
+                        : "中继已就绪，手机在外面切至「外网中继」即可随时接入";
+                }
+                _btnWanConnect.IsEnabled = false;
+                _btnWanDisconnect.IsEnabled = true;
+                _trayWanConnectItem.Enabled = false;
+                _trayWanDisconnectItem.Enabled = true;
+            }
+            else
+            {
+                _wanDot.Fill = BrushHex("#F59E0B");
+                _wanCardBorder.BorderBrush = BrushHex("#1E293B");
+                _wanStateTitle.Text = "🌐 外网中继 · 正在重连...";
+                _wanStateSub.Text = "正在连接 " + relayUrl;
+                _btnWanConnect.IsEnabled = false;
+                _btnWanDisconnect.IsEnabled = true;
+                _trayWanConnectItem.Enabled = false;
+                _trayWanDisconnectItem.Enabled = true;
+            }
+
+            if (wanPaired)
+            {
+                _wanPairBig.FontSize = 18;
+                _wanPairBig.Foreground = BrushHex("#22C55E");
+                _wanPairBig.Text = "已配对：" + (string.IsNullOrEmpty(wanPairedName) ? "外网手机" : wanPairedName);
+                _wanPairSub.Text = (wanPeerOnline && !lanPeerOnline)
+                    ? "🟢 正在通过外网中继实时同步"
+                    : "🔵 已绑定外网凭证，手机切至「外网中继」即刻秒连";
+                _btnCopyWanCode.Visibility = Visibility.Collapsed;
+            }
+            else if (!string.IsNullOrEmpty(wanPairCode) && wanPairCode.Length == 6)
+            {
+                _wanPairBig.FontSize = 25;
+                _wanPairBig.Foreground = BrushHex("#60A5FA");
+                _wanPairBig.Text = wanPairCode.Substring(0, 3) + " " + wanPairCode.Substring(3, 3);
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long remSec = Math.Max(0, (wanPairExp - nowMs) / 1000);
+                _wanPairSub.Text = string.Format("外网 6 位配对码有效倒计时：{0:D2}:{1:D2}", remSec / 60, remSec % 60);
+                _btnCopyWanCode.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                _wanPairBig.FontSize = 20;
+                _wanPairBig.Foreground = BrushHex("#94A3B8");
+                _wanPairBig.Text = wanUnconfigured ? "待填地址" : (wanManualPaused ? "已暂停" : "待签发...");
+                _wanPairSub.Text = wanUnconfigured ? "填写下方 VPS 地址后自动获取外网配对码" : "连接外网中继后自动签发 6 位配对码";
+                _btnCopyWanCode.Visibility = Visibility.Collapsed;
+            }
+
+            // ── 2. Quota Card ──
             if (d.ContainsKey("quota") && d["quota"] is Dictionary<string, object>)
             {
                 var q = (Dictionary<string, object>)d["quota"];
                 _quotaPlanText.Text = "反重力套餐：" + GetStr(q, "planName");
-                _quotaGeminiText.Text = string.Format("AGY Gemini  5h 剩余 {0}%  |  7d 剩余 {1}%",
+                _quotaGeminiText.Text = string.Format("AGY Gemini 5h:{0}% | 7d:{1}%",
                     GetInt(q, "gemini5hRem", 0), GetInt(q, "gemini7dRem", 0));
-                _quotaClaudeText.Text = string.Format("AGY 附赠池  5h 剩余 {0}%  |  7d 剩余 {1}%",
+                _quotaClaudeText.Text = string.Format("AGY 附赠池 5h:{0}% | 7d:{1}%",
                     GetInt(q, "claude5hRem", 0), GetInt(q, "claude7dRem", 0));
             }
             if (d.ContainsKey("codexQuota") && d["codexQuota"] is Dictionary<string, object>)
             {
                 var cq = (Dictionary<string, object>)d["codexQuota"];
-                _quotaCodexText.Text = string.Format("Codex({0}) 5h 剩余 {1}%  |  7d 剩余 {2}%",
+                _quotaCodexText.Text = string.Format("Codex({0}) 5h:{1}% | 7d:{2}%",
                     GetStr(cq, "planName"), GetInt(cq, "window5hRem", 0), GetInt(cq, "window7dRem", 0));
             }
             string cdpNote = GetStr(d, "cdpNote");
@@ -1623,7 +1412,7 @@ namespace ClawBridgeDesktop
                 ? ("本机通道：🟢 " + cdpNote)
                 : "本机通道：🟢 Transcript 实时镜像运行中";
 
-            // Logs
+            // ── 4. Logs ──
             if (d.ContainsKey("logs") && d["logs"] is System.Collections.ArrayList)
             {
                 var arr = (System.Collections.ArrayList)d["logs"];

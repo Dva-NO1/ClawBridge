@@ -173,7 +173,7 @@ export class RelayClient extends EventEmitter {
     if (!this.config._ephemeral) {
       saveConfig(this.config);
     }
-    if (!this.lanPaused && !this.config.lanEnabled) {
+    if (!this.lanPaused) {
       this.manualPaused = false;
       this.running = true;
       this.forceReconnectNow('relay_config_changed');
