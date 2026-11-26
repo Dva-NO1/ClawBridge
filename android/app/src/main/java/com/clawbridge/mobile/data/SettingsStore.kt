@@ -287,6 +287,22 @@ class SettingsStore(private val context: Context) {
             }
         }
 
+        /**
+         * Returns true when the relay URL points directly to a public IPv4 address (e.g. `wss://203.0.113.10:8443`)
+         * rather than a domain name, allowing automatic self-signed TLS adaptation without buying a domain.
+         */
+        fun isIpv4RelayHost(raw: String): Boolean {
+            val normalized = normalizeRelayUrl(raw)
+            val hostPart = normalized
+                .removePrefix("wss://")
+                .removePrefix("ws://")
+                .substringBefore("/")
+                .substringBefore(":")
+                .trim()
+            if (!hostPart.matches(Regex("^\\d{1,3}(\\.\\d{1,3}){3}$"))) return false
+            return hostPart != "127.0.0.1"
+        }
+
         private fun hashPin(pin: String, saltHex: String): String {
             val md = MessageDigest.getInstance("SHA-256")
             val digest = md.digest("$saltHex:$pin".toByteArray(Charsets.UTF_8))

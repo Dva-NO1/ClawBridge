@@ -132,6 +132,7 @@ namespace ClawBridgeDesktop
         // WAN Relay Config Card
         private Border _wanRelayCfgCard;
         private TextBox _relayUrlBox;
+        private CheckBox _chkTrustSelfSigned;
         private TextBox _logBox;
 
         private Forms.ToolStripMenuItem _trayModeLanItem;
@@ -838,10 +839,17 @@ namespace ClawBridgeDesktop
             var cfgStack = new StackPanel();
             cfgStack.Children.Add(new TextBlock
             {
-                Text = "外网中继服务器地址（仅外网模式使用，可随时修改切换）",
+                Text = "外网中继地址（支持直接填 VPS 公网 IPv4:端口 免域名直连，如仅用内网模式可不填）",
                 FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = BrushHex("#F1F5F9"),
+                Margin = new Thickness(0, 0, 0, 4)
+            });
+            cfgStack.Children.Add(new TextBlock
+            {
+                Text = "示例：直接填 203.0.113.10:8443（自动补全 wss:// 并适配自签加密证书），或填域名 wss://relay.yourdomain.com",
+                FontSize = 11.5,
+                Foreground = BrushHex("#94A3B8"),
                 Margin = new Thickness(0, 0, 0, 8)
             });
 
@@ -867,18 +875,44 @@ namespace ClawBridgeDesktop
             Grid.SetColumn(_relayUrlBox, 0);
             cfgRow.Children.Add(_relayUrlBox);
 
+            _chkTrustSelfSigned = new CheckBox
+            {
+                Content = "信任自签 TLS 证书（使用 VPS 公网 IP 免域名直连时勾选，输入纯 IP 保存时将自动开启）",
+                Foreground = BrushHex("#94A3B8"),
+                FontSize = 12,
+                Margin = new Thickness(0, 8, 0, 0),
+                VerticalContentAlignment = VerticalAlignment.Center
+            };
+
             var btnSaveRelay = MakeActionButton("保存并应用", "#0284C7", "#FFFFFF", false);
             btnSaveRelay.Margin = new Thickness(0);
             btnSaveRelay.Click += (s, e) =>
             {
-                string u = (_relayUrlBox.Text ?? "").Trim();
-                if (!u.StartsWith("wss://") && !u.StartsWith("ws://"))
+                string rawInput = (_relayUrlBox.Text ?? "").Trim().TrimEnd('/');
+                if (string.IsNullOrEmpty(rawInput))
                 {
-                    MessageBox.Show("中继地址须以 wss:// 开头", "格式提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("请输入 VPS 公网 IP:端口（如 203.0.113.10:8443）或 wss:// 域名地址", "格式提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
-                string body = _json.Serialize(new Dictionary<string, object> { { "relayUrl", u } });
-                SendPost("/api/relay-config", body);
+                string u = rawInput;
+                if (u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    u = "wss://" + u.Substring(8);
+                else if (u.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                    u = "ws://" + u.Substring(7);
+                else if (!u.StartsWith("wss://", StringComparison.OrdinalIgnoreCase) && !u.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+                    u = "wss://" + u;
+
+                _relayUrlBox.Text = u;
+                bool isBareIp = IsBareIpv4RelayUrl(u);
+                bool trustCert = isBareIp ? true : (_chkTrustSelfSigned.IsChecked == true);
+                if (isBareIp) _chkTrustSelfSigned.IsChecked = true;
+
+                var payload = new Dictionary<string, object>
+                {
+                    { "relayUrl", u },
+                    { "trustSelfSigned", trustCert }
+                };
+                SendPost("/api/relay-config", _json.Serialize(payload));
             };
             Grid.SetColumn(btnSaveRelay, 2);
             cfgRow.Children.Add(btnSaveRelay);
@@ -894,6 +928,7 @@ namespace ClawBridgeDesktop
             cfgRow.Children.Add(btnOpenDir);
 
             cfgStack.Children.Add(cfgRow);
+            cfgStack.Children.Add(_chkTrustSelfSigned);
             _wanRelayCfgCard.Child = cfgStack;
             stack.Children.Add(_wanRelayCfgCard);
 
@@ -1179,6 +1214,7 @@ namespace ClawBridgeDesktop
             bool peerOnline = GetBool(d, "peerOnline");
             string pairedName = GetStr(d, "pairedDeviceName");
             string relayUrl = GetStr(d, "relayUrl");
+            bool trustSelfSigned = GetBool(d, "trustSelfSigned");
             string pairCode = GetStr(d, "pairingCode");
             long pairExp = GetLong(d, "pairingExpiresAt");
             int rtt = GetInt(d, "lastRttMs", -1);
@@ -1218,6 +1254,7 @@ namespace ClawBridgeDesktop
             {
                 _lastRelayLoaded = relayUrl;
                 _relayUrlBox.Text = relayUrl;
+                _chkTrustSelfSigned.IsChecked = trustSelfSigned;
             }
 
             // ── Update Top Big Segmented Switch ──
@@ -1508,6 +1545,19 @@ namespace ClawBridgeDesktop
                     _trayConnectItem.Enabled = false;
                     _trayDisconnectItem.Enabled = true;
                 }
+                else if (!string.IsNullOrEmpty(relayUrl) && relayUrl.IndexOf("example.com", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _statusDot.Fill = BrushHex("#64748B");
+                    _statusTitle.Text = "外网中继尚未配置";
+                    _statusSubtitle.Text = "若在同一 WiFi 下，点击顶部「⚡ 内网直连」即可免服务器单独使用；如需外网远程，请在下方填入 VPS 公网 IP:端口";
+                    _btnConnect.IsEnabled = false;
+                    _btnConnect.Opacity = 0.45;
+                    _btnDisconnect.IsEnabled = false;
+                    _btnDisconnect.Opacity = 0.45;
+                    _trayConnectItem.Enabled = false;
+                    _trayDisconnectItem.Enabled = false;
+                    _trayIcon.Text = "ClawBridge · 待配置中继或切内网";
+                }
                 else
                 {
                     _statusDot.Fill = BrushHex("#F59E0B");
@@ -1589,6 +1639,21 @@ namespace ClawBridgeDesktop
                     _logBox.ScrollToEnd();
                 }
             }
+        }
+
+        private static bool IsBareIpv4RelayUrl(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                IPAddress ip;
+                if (IPAddress.TryParse(uri.Host, out ip) && ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    return uri.Host != "127.0.0.1";
+                }
+            }
+            catch { }
+            return false;
         }
 
         private static bool GetBool(Dictionary<string, object> d, string k)

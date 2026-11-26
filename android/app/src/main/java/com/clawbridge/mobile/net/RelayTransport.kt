@@ -357,7 +357,7 @@ class RelayTransport(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val msg = when {
                     t is javax.net.ssl.SSLHandshakeException && !cfg.trustSelfSigned ->
-                        "TLS 证书校验失败（已按安全策略拒绝不受信任/自签证书）"
+                        "TLS 证书校验失败：若使用 VPS 公网 IP 免域名直连，请在「设置」开启「信任自签 TLS 证书」后重连"
                     else -> t.message ?: "网络连接中断"
                 }
                 cleanupSocket(webSocket, closedGate, msg)

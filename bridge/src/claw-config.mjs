@@ -16,14 +16,37 @@ import { getAppDataDir, logger } from './logger.mjs';
 
 export const PLACEHOLDER_RELAY_URL = 'wss://relay.example.com';
 
+export function getDefaultDesktopDir() {
+  const home = process.env.USERPROFILE || os.homedir();
+  return path.join(home, 'Desktop');
+}
+
 export function isPlaceholderRelayUrl(url) {
   const u = String(url || '').trim();
   return !u || /relay\.example\.com|your-domain|example\.com/i.test(u);
 }
 
-export function getDefaultDesktopDir() {
-  const home = process.env.USERPROFILE || os.homedir();
-  return path.join(home, 'Desktop');
+export function normalizeRelayUrlInput(raw) {
+  const t = String(raw || '').trim().replace(/\/+$/, '');
+  if (!t) return '';
+  if (/^wss:\/\//i.test(t)) return 'wss://' + t.slice(6);
+  if (/^https:\/\//i.test(t)) return 'wss://' + t.slice(8);
+  if (/^ws:\/\//i.test(t)) return 'ws://' + t.slice(5);
+  if (/^http:\/\//i.test(t)) return 'ws://' + t.slice(7);
+  return 'wss://' + t;
+}
+
+export function isIpv4RelayUrl(rawUrl) {
+  try {
+    const normalized = normalizeRelayUrlInput(rawUrl);
+    if (!normalized) return false;
+    const u = new URL(normalized);
+    const host = (u.hostname || '').trim();
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
+    return host !== '127.0.0.1';
+  } catch {
+    return false;
+  }
 }
 
 export function getConfigPath() {

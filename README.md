@@ -16,11 +16,13 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`，仅外网跨�
 
 | 平台 | 安装包文件 | 说明 |
 | :--- | :--- | :--- |
-| **Android 手机端** | `ClawBridge-v2.0.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持旧版本无缝覆盖升级） |
-| **Windows 电脑端** | `ClawBridge-v2.0.0-windows-setup.exe` | 一键图形安装程序，内置双模式 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
+| **Android 手机端** | `ClawBridge-v2.0.1-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持旧版本无缝覆盖升级） |
+| **Windows 电脑端** | `ClawBridge-v2.0.1-windows-setup.exe` | 一键图形安装程序，内置双模式 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
 | **校验文件** | `SHA256SUMS.txt` | 官方发布的 SHA-256 哈希校验清单 |
 
-> **提示**：若手机与电脑处于同一 Wi-Fi / 局域网，安装后直接在两端顶部大开关切至 **「内网直连」** 输入 6 位配对码即可免服务器使用；若需 5G 跨网远程控制，按下方第 1 步在自己的 VPS 上一键部署中继并填入 `wss://relay.yourdomain.com` 即可。
+> **提示**：**「内网直连」与「外网中继」两种模式均可完全单独使用，也可混合切换！**
+> - **纯内网使用（0 成本免服务器）**：只需 **1 台 Windows 电脑 + 1 部手机** 连同一 Wi-Fi，安装后在两端顶部大开关切至 **「内网直连」** 输入 6 位配对码即可使用全部功能；
+> - **跨网远程使用（免买域名，仅需 1 台 VPS）**：只需拥有 **1 台带公网 IPv4 的 VPS + 1 台电脑 + 1 部手机**，在 VPS 执行 `sudo bash deploy.sh` 自动生成自签加密直连地址 `wss://<VPS公网IP>:8443` 填入两端即可（无需买域名/无需配 DNS）。超详细手把手教程见 **[docs/DEVELOPMENT_GUIDE.md](./docs/DEVELOPMENT_GUIDE.md)**。
 
 ---
 
@@ -93,40 +95,43 @@ ClawBridge-OSS/
 
 ---
 
-## 从零搭建全流程
+## 从零搭建全流程（两种模式均可单独使用）
 
-### 第 1 步：在自己的 VPS 部署中继服务
+> 更详细的保姆级图文式步骤与全功能说明书请阅读：**[docs/DEVELOPMENT_GUIDE.md](./docs/DEVELOPMENT_GUIDE.md)**。
+> - **如果你只在局域网/同一 Wi-Fi 下使用**：**直接跳过第 1 步**，装好第 2 步电脑端与第 3 步手机端后，在两端顶部点击 **「⚡ 内网直连」** 输入 6 位配对码即可！
+
+### 第 1 步：在自己的 VPS 部署中继服务（仅外网模式需要 · 免域名 IP 直连）
 
 #### 1.1 VPS 最低要求与准备
 - **最低配置**：1 vCPU / 512 MB–1 GB RAM / 10 GB 硬盘（中继内存占用仅 ~30 MB）
-- **操作系统**：Ubuntu 22.04 / 24.04 或 Debian 12（干净环境即可）
-- **安全组 / 防火墙放行端口**：
-  - `TCP 80`（Let's Encrypt HTTP-01 证书签发与自动跳转 HTTPS）
-  - `TCP 443`（公网 `wss://` 加密连接）
-  - `TCP 22`（SSH 运维）
-  - *注意：内部中继端口 `8787` 仅监听 `127.0.0.1`，**不要**对外网放行！*
-- **域名解析**：在你的域名 DNS 服务商添加一条 **`A` 记录**，将子域名（如 `relay.yourdomain.com`）指向你的 VPS 公网 IP（`YOUR_VPS_IP`），等待 DNS 生效（可用 `ping relay.yourdomain.com` 确认）。
+- **操作系统**：Ubuntu 22.04 / 24.04 或 Debian 12，拥有**独立公网 IPv4 地址**（**不需要购买域名！**）
+- **云厂商安全组 / 防火墙放行端口**：
+  - **免域名公网 IP 模式（默认推荐）**：放行 **`TCP 8443`**（或你通过 `--port` 指定的端口）及 `TCP 22`（SSH）
+  - *(可选) 若使用自己的域名模式*：放行 `TCP 80` 与 `TCP 443`
 
-#### 1.2 一键部署（自动安装 Node.js + systemd + Nginx + Let's Encrypt 证书）
+#### 1.2 一条命令免域名部署（自动识别公网 IPv4 + 自动签发 10 年期自签 TLS 加密证书）
 
-将本仓库上传或 `git clone` 到 VPS 后执行：
+SSH 登录 VPS 后执行：
 
 ```bash
-cd ClawBridge-OSS/relay/deploy
-sudo bash deploy.sh --domain relay.yourdomain.com --email you@yourdomain.com
+git clone https://github.com/Dva-NO1/ClawBridge.git
+cd ClawBridge/relay/deploy
+
+# 免域名直接部署！（自动识别 VPS 公网 IPv4 并监听 wss://<VPS_IP>:8443）
+sudo bash deploy.sh
 ```
 
 > 可选参数：
-> - `--port 8787`：自定义内部监听端口（默认 `8787`）
-> - `--proxy caddy`：改用 Caddy 自动签发 HTTPS 证书
-> - `--proxy none`：仅部署 Node 中继与 systemd，自行配置反向代理（可参考 [nginx-relay.conf.example](./relay/deploy/nginx-relay.conf.example)）
+> - `--ip 203.0.113.10 --port 8443`：手动指定公网 IPv4 与监听端口（如 `--port 443`）
+> - `--domain relay.yourdomain.com --email you@yourdomain.com`：如果你已有域名，可切换为 Nginx + Let's Encrypt 证书模式
+> - `--domain relay.yourdomain.com --proxy caddy`：使用 Caddy 自动签发域名证书
 
 #### 1.3 验证中继就绪
 
 ```bash
 sudo systemctl status clawbridge-relay
-curl https://relay.yourdomain.com/healthz
-# 预期返回：{"ok":true,"service":"clawbridge-relay","v":1,"uptimeSec":...}
+curl -k https://127.0.0.1:8443/healthz
+# 预期返回：{"ok":true,"service":"clawbridge-relay","v":1,"tls":true,"uptimeSec":...}
 ```
 
 ---
@@ -135,14 +140,14 @@ curl https://relay.yourdomain.com/healthz
 
 **前置条件**：Windows 10/11、Node.js ≥ 22、本地已安装 Antigravity 和/或 Codex CLI。
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.1-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
 - **方式 B（从源码安装）**：在 PowerShell 进入仓库根目录执行一键安装脚本（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
    ```
-2. **首次配置你的中继地址**（二选一）：
-   - **图形界面**：启动桌面快捷方式 `ClawBridge 桌面控制台`（或点击系统托盘图标），在「中继服务器地址」填入 `wss://relay.yourdomain.com` → 点击 **「保存并应用」**；
-   - **手动编辑**：参考 [bridge/config.example.json](./bridge/config.example.json) 编辑 `%APPDATA%\clawbridge\config.json`，将 `relayUrl` 改为 `wss://relay.yourdomain.com` 后重启桥服务。
+2. **选择你的使用模式（二选一或都配）**：
+   - **仅用内网直连**：点击控制台顶部 **「⚡ 内网直连 (LAN)」** 即可直接生成 6 位内网配对码（无需填中继地址）；
+   - **使用外网中继**：在控制台「外网中继地址」直接填入你的 VPS 公网 **`IP:8443`**（如 `203.0.113.10:8443`，会自动补全 `wss://` 并自动开启自签 TLS 证书适配）→ 点击 **「保存并应用」**。
 3. 命令行查看运行状态与当前 6 位配对码（源码安装方式）：
    ```powershell
    node --no-warnings .\bridge\src\index.mjs --show-pair-code
@@ -152,7 +157,7 @@ curl https://relay.yourdomain.com/healthz
 
 ### 第 3 步：安装 Android App
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.0-android.apk` 并直接安装到手机。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.1-android.apk` 并直接安装到手机。
 - **方式 B（从源码自行构建）**：详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
 
 ```bash
@@ -164,7 +169,9 @@ cd android
 ```
 
 安装 APK 到手机后：
-1. **首次启动配置中继**：首页会提示「请先配置中继地址」，点击 **「中继设置」**（或底部「设置」Tab）→ 填入你自己的 `wss://relay.yourdomain.com` → 点击 **「保存中继设置并重连」**；
+1. **选择你的模式**：
+   - **内网直连模式**：同一 Wi-Fi 下点击顶部大开关 **「内网直连」**，3 秒内自动发现电脑并提示输入 6 位内网配对码；
+   - **外网中继模式**：进入底部 **「设置」** → 在「外网中继服务器」直接填入 VPS 的 **`203.0.113.10:8443`** → 点击 **「保存中继设置并重连」**（自动开启自签 TLS 兼容并跳回首页）。
 2. **建议开启后台保活**（国产 ROM 如 HyperOS / MIUI / ColorOS）：在设置页「后台保活配置」中依次开启「忽略电池优化（无限制）」、「后台自启动」与「锁屏/悬浮通知」。
 
 ---

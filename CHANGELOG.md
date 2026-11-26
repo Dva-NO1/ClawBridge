@@ -4,6 +4,18 @@ All notable changes and bug fixes to **ClawBridge** are documented in this file.
 
 ---
 
+## [v2.0.1] - 2026-11-26
+
+### Added & Improved
+- **外网中继支持纯 VPS 公网 IPv4 免域名直连**：
+  - `relay/src/server.mjs` 新增原生 `node:https`（`RELAY_TLS_CERT` / `RELAY_TLS_KEY`）WSS 支持，无需依赖 Nginx/Caddy 反向代理即可直接对外提供 TLS 1.2/1.3 加密中继。
+  - `relay/deploy/deploy.sh` 默认升级为**免域名公网 IPv4 模式**（直接运行 `sudo bash deploy.sh` 自动检测公网 IPv4、自动生成 10 年期 `SAN=IP:<VPS_IP>` 自签 TLS 证书、注册 `systemd` 并输出 `wss://<VPS_IP>:8443` 及 SHA-256 指纹），同时完整保留 `--domain` 域名证书模式。
+  - Windows 桌面控制台与 Android 客户端新增**裸公网 IPv4 自动识别与自签 TLS 自动适配**：直接输入 `203.0.113.10:8443` 保存即可自动补全 `wss://` 并自动开启自签 TLS 兼容；未配置外网时保持安静待命，确保**内网直连与外网中继两种模式均可完全独立单独使用**。
+- **重写超详细全流程搭建与使用手册（`docs/DEVELOPMENT_GUIDE.md` & `README.md`）**：
+  - 详细覆盖「纯内网独立搭建（1 电脑 + 1 手机）」、「纯外网免域名搭建（1 VPS + 1 电脑 + 1 手机）」、「双模式混合切换」及全部功能使用与排障指南。
+
+---
+
 ## [v2.0.0] - 2026-11-26
 
 ### Added (新增功能)

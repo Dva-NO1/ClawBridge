@@ -10,6 +10,7 @@
  */
 
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +20,8 @@ const PROTOCOL_VERSION = 1;
 const HOST = process.env.RELAY_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.RELAY_PORT || '8787', 10);
 const STATE_FILE = process.env.RELAY_STATE_FILE || path.resolve(process.cwd(), 'data', 'state.json');
+const TLS_CERT_FILE = (process.env.RELAY_TLS_CERT || '').trim();
+const TLS_KEY_FILE = (process.env.RELAY_TLS_KEY || '').trim();
 
 const HEARTBEAT_PING_MS = 30_000;
 const HEARTBEAT_TIMEOUT_MS = 90_000;
@@ -239,9 +242,9 @@ function pruneUnpairedBridgesIfNeeded() {
   }
 }
 
-// ─── HTTP + WebSocket Server ─────────────────────────────────────────────────
+// ─── HTTP / Native HTTPS + WebSocket Server ──────────────────────────────────
 
-const server = http.createServer((req, res) => {
+function handleHttpRequest(req, res) {
   if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/')) {
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(
@@ -249,6 +252,7 @@ const server = http.createServer((req, res) => {
         ok: true,
         service: 'clawbridge-relay',
         v: PROTOCOL_VERSION,
+        tls: Boolean(TLS_CERT_FILE && TLS_KEY_FILE),
         uptimeSec: Math.floor(process.uptime()),
       })
     );
@@ -256,7 +260,19 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify({ ok: false, error: 'not_found' }));
-});
+}
+
+const useNativeTls = Boolean(TLS_CERT_FILE && TLS_KEY_FILE);
+const server = useNativeTls
+  ? https.createServer(
+      {
+        cert: fs.readFileSync(TLS_CERT_FILE),
+        key: fs.readFileSync(TLS_KEY_FILE),
+        minVersion: 'TLSv1.2',
+      },
+      handleHttpRequest
+    )
+  : http.createServer(handleHttpRequest);
 
 const wss = new WebSocketServer({
   noServer: true,
@@ -885,5 +901,6 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 server.listen(PORT, HOST, () => {
-  log('INFO', `ClawBridge Relay listening on http://${HOST}:${PORT} (protocol v=${PROTOCOL_VERSION})`);
+  const scheme = useNativeTls ? 'https' : 'http';
+  log('INFO', `ClawBridge Relay listening on ${scheme}://${HOST}:${PORT} (protocol v=${PROTOCOL_VERSION}, nativeTls=${useNativeTls})`);
 });

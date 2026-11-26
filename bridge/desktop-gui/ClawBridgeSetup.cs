@@ -11,7 +11,7 @@ namespace ClawBridgeSetup
 {
     static class Program
     {
-        private const string AppVersion = "2.0.0";
+        private const string AppVersion = "2.0.1";
 
         [STAThread]
         static int Main(string[] args)

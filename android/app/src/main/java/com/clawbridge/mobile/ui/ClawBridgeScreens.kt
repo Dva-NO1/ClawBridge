@@ -2991,7 +2991,7 @@ internal fun SettingsScreenContent(
             }
         )
 
-        // 1B. 外网中继服务器设置
+        // 1B. 外网中继服务器设置（支持直接填 VPS 公网 IPv4 免域名直连）
         Card(
             shape = ClawDimens.CardShape,
             colors = CardDefaults.cardColors(containerColor = ClawColors.Surface),
@@ -3002,12 +3002,17 @@ internal fun SettingsScreenContent(
                 modifier = Modifier.padding(ClawDimens.CardPadding),
                 verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
             ) {
-                Text("中继服务器", style = MaterialTheme.typography.titleMedium, color = ClawColors.TextPrimary)
+                Text("外网中继服务器（VPS 公网 IP 直连 / 域名）", style = MaterialTheme.typography.titleMedium, color = ClawColors.TextPrimary)
+                Text(
+                    text = "无需购买域名！直接填写 VPS 公网 IPv4:端口（如 203.0.113.10:8443）保存即可自动适配自签加密直连；若仅使用「内网直连」模式可无需配置此项。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ClawColors.TextSecondary
+                )
                 OutlinedTextField(
                     value = relayUrlInput,
                     onValueChange = { relayUrlInput = it },
-                    label = { Text("中继 WSS 地址（可自由更换）") },
-                    placeholder = { Text("wss://relay.example.com") },
+                    label = { Text("VPS 公网 IP:端口 或 WSS 域名地址") },
+                    placeholder = { Text("例如 203.0.113.10:8443 或 wss://relay.example.com") },
                     singleLine = true,
                     shape = ClawDimens.NestedShape,
                     colors = clawTextFieldColors(),
@@ -3020,9 +3025,9 @@ internal fun SettingsScreenContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("信任自签 TLS 证书", style = MaterialTheme.typography.bodyMedium, color = ClawColors.TextPrimary)
+                        Text("信任自签 TLS 证书（VPS 纯 IP 直连）", style = MaterialTheme.typography.bodyMedium, color = ClawColors.TextPrimary)
                         Text(
-                            text = "默认严格校验正规证书，开启需承担中间人风险",
+                            text = "填 VPS 公网 IP 保存时将自动开启；填正规域名时建议关闭",
                             style = MaterialTheme.typography.bodySmall,
                             color = ClawColors.TextMuted
                         )
@@ -3039,12 +3044,16 @@ internal fun SettingsScreenContent(
                 Button(
                     onClick = {
                         val normalized = SettingsStore.normalizeRelayUrl(relayUrlInput)
+                        val isBareIpv4 = SettingsStore.isIpv4RelayHost(normalized)
+                        val effectiveTrustSelfSigned = if (isBareIpv4) true else trustSelfSigned
+                        if (isBareIpv4) trustSelfSigned = true
                         val changed = normalized != appSettings.relayUrl
-                        onSaveRelayConfig(normalized, trustSelfSigned)
-                        statusBanner = if (changed) {
-                            "已保存新中继并断开旧连接，请返回首页输入新配对码"
-                        } else {
-                            "连接配置已保存并重连"
+                        onSaveRelayConfig(normalized, effectiveTrustSelfSigned)
+                        statusBanner = when {
+                            changed && isBareIpv4 -> "已保存 VPS 公网 IP 直连（已自动适配自签 TLS 证书），请回首页输入配对码"
+                            changed -> "已保存新中继并断开旧连接，请返回首页输入新配对码"
+                            isBareIpv4 -> "VPS 公网 IP 直连配置已保存并重连"
+                            else -> "连接配置已保存并重连"
                         }
                         if (changed) onNavigateHomeForPair()
                     },

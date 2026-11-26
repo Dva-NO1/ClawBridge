@@ -16,7 +16,15 @@ import WebSocket from 'ws';
 import fs from 'node:fs';
 import { logger } from './logger.mjs';
 import { resilientLookup } from './dns-resolver.mjs';
-import { getPairingFilePath, saveConfig, writePairingCodeInfo, writeRuntimeStatus } from './claw-config.mjs';
+import {
+  getPairingFilePath,
+  isIpv4RelayUrl,
+  isPlaceholderRelayUrl,
+  normalizeRelayUrlInput,
+  saveConfig,
+  writePairingCodeInfo,
+  writeRuntimeStatus,
+} from './claw-config.mjs';
 import { PROTOCOL_VERSION, parseAndValidateEnvelope, serializeEnvelope } from './transport-router.mjs';
 
 export { PROTOCOL_VERSION };
@@ -143,12 +151,15 @@ export class RelayClient extends EventEmitter {
   }
 
   updateRelayConfigLive(newRelayUrl, trustSelfSigned) {
-    const normalized = String(newRelayUrl || '').trim().replace(/\/+$/, '');
+    const normalized = normalizeRelayUrlInput(newRelayUrl);
     if (!normalized) return;
     const urlChanged = normalized !== this.config.relayUrl;
     this.config.relayUrl = normalized;
     if (typeof trustSelfSigned === 'boolean') {
       this.config.trustSelfSigned = trustSelfSigned;
+    } else if (isIpv4RelayUrl(normalized)) {
+      // Auto-enable self-signed TLS compatibility when user configures a bare VPS IPv4 address
+      this.config.trustSelfSigned = true;
     }
     if (urlChanged) {
       logger.info('RelayClient', `Relay URL updated via Desktop UI -> ${normalized}; resetting token for re-pairing`);
@@ -250,7 +261,14 @@ export class RelayClient extends EventEmitter {
   _connect() {
     if (!this.running || this.ws) return;
 
-    const url = this.config.relayUrl;
+    const url = normalizeRelayUrlInput(this.config.relayUrl);
+    if (isPlaceholderRelayUrl(url)) {
+      this.connected = false;
+      this.authenticated = false;
+      this.peerOnline = false;
+      this._syncStatus();
+      return;
+    }
     if (!url || (!url.startsWith('wss://') && !url.startsWith('ws://'))) {
       logger.error('RelayClient', `Invalid relayUrl "${url}" (must start with wss://)`);
       this._scheduleReconnect();

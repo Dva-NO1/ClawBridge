@@ -1,61 +1,326 @@
-# ClawBridge 开发流程与架构演进文档
+# ClawBridge 完整搭建、使用与开发全手册
 
-本文档记录了 ClawBridge 从零起步到完整可用的里程碑演进、关键协议设计与核心排障结论，帮助开发者理解整个系统是如何一步步搭建起来的。
-
----
-
-## 1. 里程碑演进路线
-
-### M1：公网 WSS 中继与配对连通
-- **目标**：在不依赖 VPN / 内网穿透的前提下，实现安卓手机与 Windows 桌面桥在 5G / Wi-Fi 下的稳定双向连通。
-- **实现**：
-  - `relay/src/server.mjs`：单进程 Node.js + `ws` 实现最小职责中继（设备鉴权、6 位 10 分钟一次性配对码、绑定对内帧转发、离线通知 FIFO 暂存 200 条）；所有 `deviceToken` 仅以 SHA-256 哈希落盘。
-  - `bridge/src/relay-client.mjs` + `power-monitor.mjs`：主动外连中继，支持 1s→60s 指数退避重连与 Windows 休眠唤醒自恢复。
-  - `android/`：Kotlin + Jetpack Compose 重建客户端，内置前台保活服务与 DoH DNS 解析。
-
-### M2：双端模型配额与统一会话流
-- **目标**：在手机首页展示实时模型配额，并统一浏览 Antigravity 与 Codex 会话、子代理及产物。
-- **实现**：
-  - `bridge/src/google-quota.mjs`：本机读取 OAuth 凭证（绝不离开本机）每 5 分钟拉取 5h/7d 配额并落盘缓存。
-  - `bridge/src/codex-client.mjs`：封装 `codex app-server` JSON-RPC 2.0，独立拉取 OpenAI `ChatGPT` 5h/7d 额度与免费重置券数量，避免与 Antigravity 内置附赠池混淆。
-  - `bridge/src/session-service.mjs`：聚合 Antigravity（SQLite + `transcript.jsonl`）与 Codex（`app-server` + `~/.codex/sessions`），提供会话快照、增量流式推送与分片文件下载。
-
-### M3：分级通知与高风险 PIN 审批
-- **目标**：息屏/断网不漏重要事件，高风险命令强制二次确认。
-- **实现**：
-  - `bridge/src/notification-engine.mjs`：统一监控 `approval.pending`、`task.done`、`task.error` 三类事件；高风险正则（`rm/del/format/install/powershell/git reset --hard` 等）在桥端硬编码判定，客户端不可降级。
-  - Android 通知栏支持低风险一键批准，高风险强制跳转 App 校验 4–6 位安全 PIN 后放行。
-
-### M4：双向交互增强与原生投递修复
-- **目标**：手机端像原生聊天软件一样指挥桌面会话，记忆上次阅读位置。
-- **关键工程排障**：
-  - 发现 Antigravity 2.34.0 的 `agentapi` 在无环境变量注入时会失败；改为动态扫描 `~/.gemini/antigravity/daemon/hub_*.json`（带存活 PID 校验），直接走 Hub ConnectRPC (`SendUserCascadeMessage`) 原生投递，同时保留 CDP 9222 作为兜底并透传完整错误与退出码。
-  - 会话详情页按会话 ID 持久化上次阅读锚点，重进会话自动回到上次看到的位置。
-
-### M5：任务级实时换模型、双向文件传输与静默托盘
-- **模型切换**：通过 Antigravity `GetCascadeModelConfigData` 与 Codex `model/list` 动态同步可用模型及推理档位，支持单会话即时切换。
-- **手机 ↔ 电脑文件/图片互通**：实现 `upload.chunk` / `upload.complete`（256 KB 分片、最大 64 MB）上传至工作区并支持多模态图片直传；聊天消息内联识别文件路径与 APK 交付物，提供一键下载到手机。
-- **Windows 静默托盘**：采用 C# WPF (`/target:winexe`) 编译 `ClawBridgeDesktop.exe`，后台零黑窗拉起 `node.exe`，本地 IPC 强制 `Proxy = null` 绕过系统代理，`Ctrl+Alt+C` 随时呼出。
-
-### v1.6 – v1.7：UI 规范统一与 Codex 单写入者锁治理
-- **全 App 深色视觉重构 (`v1.6.0`)**：基于统一设计规范 [MASTER.md](../design-system/clawbridge/MASTER.md) 统一全页面背景层级、排版与柔和状态色，修复窄屏重叠与中继地址截断，并通过 Robolectric Compose 360dp 实机像素渲染自查。
-- **高密度可搜索会话列表 (`v1.7.0`)**：重构 56+ 长列表为紧凑行布局，支持顶部即时搜索、时间/项目双视图、状态筛选、编号标题语义化与重复副标题去重。
-- **Codex 单写入者锁治理 (`v1.7.1`–`v1.7.2`)**：
-  - 查明 Codex `0.167.0` 通过 `%USERPROFILE%\.codex\thread-writer-locks\<id>.lock` 实施系统级独占锁，桌面客户端切会话后仍可能持续持有锁；
-  - 桥端实现单线程串行 writer 复用、空闲/切换/断线自动释放 OS 锁（防泄漏）；当遇到外部桌面端独占锁定时，自动调用官方 `thread/fork` 无损继承上下文续接并在原会话流无缝合并回复。
-- **直觉式剩余额度条 (`v1.7.3`)**：将配额进度条重做为电池/油表式绿色剩余额度条，一眼看清剩余可用比例。
-
-### v1.1.0（开源版更新）：实时输出速度与花费预估面板 + 会话秒开缓存
-- **实时指标采集引擎 (`bridge/src/metrics-service.mjs`)**：仅针对 App 当前订阅会话采集，生成中最多 `1Hz` 节流推送，状态切换与 `metrics.get` 立即补帧；支持在 `%APPDATA%\clawbridge\config.json` 通过 `"metricsEnabled": false` 关闭。
-- **双端数据源与诚实口径**：Antigravity 复用 Hub ConnectRPC `GetCascadeTrajectoryGeneratorMetadata`（毫秒级精确 TTFT/TPS/token/缓存/上下文）+ `transcript.jsonl` 兜底 + 可选 CDP 3 秒滑动窗口估算（标 `≈`）；Codex 接入 `app-server` 的 `thread/tokenUsage/updated`、`item/reasoning/*Delta` 与 rollout 精确 usage。
-- **外部化可编辑单价表 (`%APPDATA%\clawbridge\prices.json`)**：首次启动自动生成，支持自行增改并热加载，JSON 损坏安全回退默认单价。
-- **会话秒开双层缓存 (`SessionDetailCache.kt` + 桥端 `transcript_full.jsonl` 整文件缓存)**：修复点击历史对话等待加载慢的问题，L1 内存 LRU + L2 磁盘缓存实现 0ms 秒开、后台静默同步最新消息。
+> **一句话定位**：只需拥有 **「1 部安卓手机 + 1 台 Windows 电脑」**（局域网内免服务器极速直连），或者再加上 **「1 台带公网 IPv4 的普通 VPS」**（**无需买域名、无需备案、无需配 DNS**，跨网 5G 随时随地远程控制），即可在手机上完整管理桌面端 **Antigravity** 与 **Codex CLI**。
 
 ---
 
-## 2. 协议帧规范速览 (Protocol v1)
+## 目录
 
-所有 WebSocket 帧采用统一的 JSON Envelope：
+1. [三种部署与使用方案（两种模式均可单独使用）](#1-三种部署与使用方案两种模式均可单独使用)
+2. [设备与环境准备清单](#2-设备与环境准备清单)
+3. [路线一：纯「内网直连」独立搭建教程（0 服务器 · 0 成本 · 3 分钟搞定）](#3-路线一纯内网直连独立搭建教程0-服务器--0-成本--3-分钟搞定)
+4. [路线二：纯「外网中继」独立搭建教程（仅需 1 台公网 IPv4 VPS · 免域名一键部署）](#4-路线二纯外网中继独立搭建教程仅需-1-台公网-ipv4-vps--免域名一键部署)
+5. [路线三：双模式混合无缝切换指南](#5-路线三双模式混合无缝切换指南)
+6. [全功能日常使用详解（手把手说明书）](#6-全功能日常使用详解手把手说明书)
+7. [源码架构、模块地图与二次开发构建指南](#7-源码架构模块地图与二次开发构建指南)
+8. [通信协议规范 (Protocol v1) 与里程碑演进](#8-通信协议规范-protocol-v1-与里程碑演进)
+9. [常见问题与排障速查手册 (Troubleshooting)](#9-常见问题与排障速查手册-troubleshooting)
+
+---
+
+## 1. 三种部署与使用方案（两种模式均可单独使用）
+
+ClawBridge 内置 **「⚡ 内网直连 (LAN)」** 与 **「🌐 外网中继 (WAN)」** 两种完全独立的传输通道。你可以**只用其中任意一种**，也可以**两种都配好随时一键切换**：
+
+| 对比维度 | 方案 A：纯「内网直连」单独使用 | 方案 B：纯「外网中继」单独使用（VPS 公网 IP 直连） | 方案 C：内外网双模式混合使用 |
+| :--- | :--- | :--- | :--- |
+| **所需硬件** | **1 台 Windows 电脑 + 1 部安卓手机** | **1 台 VPS (公网 IPv4) + 1 台 Windows 电脑 + 1 部手机** | 同方案 B |
+| **是否需要买域名 / 配 DNS** | **不需要** | **不需要！直接用 VPS 公网 IPv4 直连**（如有域名也可选绑） | **不需要** |
+| **适用场景** | 在家、宿舍、办公室（手机与电脑连同一 Wi-Fi / 路由器，或手机开热点给电脑连） | 出门在外用 5G 流量、跨城市、公司与家里异地远程指挥电脑干活 | 在家切内网享 `1ms` 极速传大文件，出门切外网 5G 随时看进度批命令 |
+| **典型延迟** | **1 ~ 5 ms**（局域网物理直连，断外网也能用） | **15 ~ 80 ms**（取决于 VPS 线路） | 随当前所选模式实时显示 |
+| **配对与安全** | 独立 6 位内网配对码 → 签发 `lanToken` 存入手机硬件 `AndroidKeyStore` | 独立 6 位外网配对码 → 全程 `WSS (TLS 1.2/1.3)` 加密 + `deviceToken` SHA-256 鉴权 | 两套凭证完全隔离，来回切换**无需重新配对、不丢历史会话** |
+
+---
+
+## 2. 设备与环境准备清单
+
+1. **Windows 电脑（必选）**
+   - 系统：Windows 10 或 Windows 11（64 位）。
+   - 运行时：安装 **Node.js ≥ 22 LTS**（前往 [https://nodejs.org](https://nodejs.org) 下载安装，打开 PowerShell 输入 `node -v` 显示 `v22.x` 或 `v24.x` 即就绪）。
+   - AI 编程工具：电脑上已安装并登录 **Antigravity** 和/或 **Codex CLI**（装了哪个就能管哪个，两个都装则同时管理）。
+2. **Android 手机（必选）**
+   - 系统：Android 8.0（API 26）及以上（小米 HyperOS/MIUI、OPPO ColorOS、vivo OriginOS、华为鸿蒙兼容层、原生 Android 均支持）。
+3. **VPS 云服务器（仅「外网中继」模式需要；只用内网模式可完全跳过！）**
+   - 配置要求极低：**1 核 CPU / 512 MB ~ 1 GB 内存 / 10 GB 硬盘** 即可流畅运行（中继进程常驻内存仅约 `30 MB`）。
+   - 操作系统：**Ubuntu 22.04 / 24.04 LTS** 或 **Debian 12**。
+   - 网络要求：拥有一个**独立的公网 IPv4 地址**（例如 `203.0.113.10`），并可在云厂商后台放行一个 TCP 端口（默认 `8443`）。**无需购买域名，无需实名备案，无需配置 Nginx。**
+
+---
+
+## 3. 路线一：纯「内网直连」独立搭建教程（0 服务器 · 0 成本 · 3 分钟搞定）
+
+如果你只需要在同一局域网（同一路由器 Wi-Fi，或手机开热点给电脑连接）下使用，**完全不需要部署 `relay/`**，直接按以下 3 步完成：
+
+### 第 1 步：安装并启动 Windows 桌面端
+
+- **方式 A（免编译安装包，最省心）**：
+  1. 下载 `ClawBridge-v2.0.0-windows-setup.exe`，双击运行。
+  2. 保持勾选「创建桌面快捷方式」与「注册 Windows 登录自启」，点击 **「立即安装」**。
+  3. 安装完成后会自动弹出 **「ClawBridge 桌面控制台」**（也可随时双击桌面图标或按快捷键 `Ctrl+Alt+C` 呼出）。
+
+- **方式 B（从源码一键安装）**：
+  在电脑上下载或 `git clone` 本仓库后，打开 PowerShell 进入项目根目录执行：
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
+  ```
+  脚本会自动安装 `bridge/` 依赖、使用系统内置 `.NET` 编译生成零黑窗托盘程序 `bridge\ClawBridgeDesktop.exe`、创建桌面快捷方式并启动服务。
+
+### 第 2 步：在电脑控制台开启「⚡ 内网直连」并确认防火墙放行
+
+1. 打开电脑上的 **ClawBridge 桌面控制台**，点击窗口最顶部醒目的左侧大按钮 **「⚡ 内网直连 (LAN)」**。
+2. 切换后，控制台面板会立即显示：
+   - **本机局域网 IP**（例如 `192.168.1.100`，已自动过滤虚拟网卡与代理 TUN 网卡）；
+   - **6 位内网配对码**（例如 `805 377`，10 分钟自动轮换，右侧可点刷新）。
+3. **【关键一步】放行 Windows 防火墙局域网入站**：
+   首次开启时若系统弹出「Windows 安全中心防火墙提示」，请勾选 **「专用网络」** 与 **「公用网络」** 并点击 **「允许访问」**。若未弹窗或手机扫描不到电脑，以**管理员身份**打开 PowerShell 执行以下一条命令永久放行内网直连与发现端口（`TCP 18791` + `UDP 18792`）：
+   ```powershell
+   New-NetFirewallRule -DisplayName "ClawBridge LAN Direct" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 18791; New-NetFirewallRule -DisplayName "ClawBridge LAN Discovery" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 18792
+   ```
+
+### 第 3 步：手机安装 App 并完成内网配对
+
+1. 将 `ClawBridge-v2.0.0-android.apk` 安装到安卓手机并打开。
+2. 确保手机与电脑连接在**同一个 Wi-Fi** 下，点击手机首页（或会话页）最顶部大开关左侧的 **「内网直连」**。
+3. **自动发现与兜底直连**：
+   - 正常情况下，手机会在 **1~3 秒内** 通过局域网广播自动发现电脑，并显示 `已发现电脑：DESKTOP-XXX · 192.168.1.100:18791`；
+   - 若公共/企业 Wi-Fi 开启了路由器「AP 隔离」拦截了广播，只需在提示卡片的输入框中**手动输入电脑控制台显示的局域网 IP**（如 `192.168.1.100`）点击 **「直连」** 即可。
+4. 在手机「内网直连配对引导」卡片中输入电脑端显示的 **6 位内网配对码** → 点击 **「完成内网配对」**。
+5. 顶部大开关立即变为 **「内网直连 ● 已连接 · 2ms」**！此后每次在同一 Wi-Fi 打开 App 均会自动记住电脑 IP 秒连（即使路由器 DHCP 给电脑换了 IP 也会自动广播重寻），**无需任何外网服务器即可使用全部功能**。
+
+---
+
+## 4. 路线二：纯「外网中继」独立搭建教程（仅需 1 台公网 IPv4 VPS · 免域名一键部署）
+
+如果你想在外面用手机 **5G/4G 移动网络** 随时远程查看和控制家里/公司的 Windows 电脑，只需要准备一台带公网 IPv4 的 VPS，**完全不需要买域名**！
+
+### 第 1 步：在云厂商后台放行端口 `TCP 8443`
+
+登录你购买 VPS 的云平台控制台（如阿里云轻量/ECS、腾讯云、AWS Lightsail、Vultr、RackNerd、搬瓦工等），找到 **「防火墙 / 安全组 (Security Group)」**，添加一条入站规则：
+- **协议**：`TCP`
+- **端口范围**：`8443`（如果你想用其他端口如 `443` 或 `9443`，放行对应端口即可）
+- **来源 (Source)**：`0.0.0.0/0`（允许你的手机 5G 动态 IP 与电脑连接）
+
+### 第 2 步：SSH 登录 VPS 并一键部署中继（免域名自动生成 IP 加密证书）
+
+使用终端或 SSH 工具（Windows 自带 PowerShell 直接运行 `ssh root@你的VPS公网IP`）登录 VPS，依次执行以下命令：
+
+```bash
+# 1. 安装 git（如果系统还没装）并拉取项目代码
+apt-get update -y && apt-get install -y git
+git clone https://github.com/Dva-NO1/ClawBridge.git
+cd ClawBridge/relay/deploy
+
+# 2. 免域名一键部署！（脚本会自动识别本机公网 IPv4，默认监听 8443 端口）
+sudo bash deploy.sh
+```
+
+> **常见自定义参数（按需选用）**：
+> - 如果你的 VPS 在 NAT 后或想手动指定公网 IP 与端口：
+>   ```bash
+>   sudo bash deploy.sh --ip 203.0.113.10 --port 8443
+>   ```
+> - 如果你想直接占用 `443` 端口（假设 VPS 上没有跑其他网站）：
+>   ```bash
+>   sudo bash deploy.sh --ip 203.0.113.10 --port 443
+>   ```
+> - *(可选进阶)* 如果你手里刚好有域名，想用 Nginx + Let's Encrypt 正规证书：
+>   ```bash
+>   sudo bash deploy.sh --domain relay.yourdomain.com --email you@yourdomain.com
+>   ```
+
+#### 部署成功后的终端输出示例：
+脚本会自动安装 Node.js、生成绑定该公网 IP 的 **10 年期自签 TLS 证书**（`/etc/clawbridge-relay/tls/cert.pem`）、注册开机自启 `systemd` 服务并验证健康检查，最后输出：
+
+```text
+==================================================================
+  ClawBridge VPS 中继部署成功（公网 IPv4 免域名直连模式）
+==================================================================
+  1. 请确保云厂商控制台安全组/防火墙已放行入站端口：TCP 8443
+  2. 在 Windows 电脑控制台与手机 App「外网中继」中填入以下地址：
+
+       wss://203.0.113.10:8443
+
+     （直接填 203.0.113.10:8443 亦可，两端会自动启用自签 TLS 加密）
+  3. TLS 证书 SHA-256 指纹：8F:3A:...
+==================================================================
+```
+
+#### VPS 常用运维检查命令（备查）：
+```bash
+# 查看中继运行状态
+sudo systemctl status clawbridge-relay
+
+# 查看实时脱敏日志
+sudo journalctl -u clawbridge-relay -f
+
+# 在电脑浏览器或终端测试端口是否已从公网放行通畅：
+curl -k https://你的VPS公网IP:8443/healthz
+# 返回 {"ok":true,"service":"clawbridge-relay","v":1,"tls":true,...} 即代表公网完全打通！
+```
+
+### 第 3 步：在 Windows 电脑端填入 VPS 公网 IP
+
+1. 按前文安装并打开电脑上的 **ClawBridge 桌面控制台**。
+2. 确认顶部大开关处于右侧 **「🌐 外网中继 (WAN)」** 高亮状态。
+3. 在中部 **「外网中继地址」** 输入框中，直接粘贴你的 VPS 地址（例如 `203.0.113.10:8443` 或 `wss://203.0.113.10:8443`）→ 点击 **「保存并应用」**。
+   - *省心设计*：输入纯 IPv4 地址保存时，桌面控制台会自动补全 `wss://` 前缀，并**自动勾选「信任自签 TLS 证书」**，无需手动折腾证书配置！
+4. 保存后 1~2 秒内，电脑控制台状态灯变亮，显示 `已连接外网中继 · 等待配对绑定`，并在左下方生成 **6 位外网一次性配对码**（例如 `479 494`）。
+
+### 第 4 步：在手机 App 填入 VPS 公网 IP 并配对
+
+1. 打开手机上的 **ClawBridge** App，确认顶部大开关处于右侧 **「外网中继」**。
+2. 点击底部导航栏右侧 **「设置」** → 向下滑到 **「外网中继服务器（VPS 公网 IP 直连 / 域名）」** 卡片。
+3. 在输入框中填入同样的 **`203.0.113.10:8443`** → 点击 **「保存中继设置并重连」**。
+   - *省心设计*：手机端识别到你填写的是公网 IPv4 地址后，同样会**自动补全 `wss://` 并自动开启自签加密证书适配**，自动跳回首页发起连接！
+4. 在 App 首页的「配对绑定桌面桥」卡片中，输入电脑端正在显示的 **6 位外网配对码** → 点击 **「立即配对」**。
+5. 配对成功！现在你可以把手机 Wi-Fi 关掉、切到纯 **5G 移动流量** 测试：顶部显示 `已连接 · XXms`，即可跨任意网络远程控制家里的电脑！
+
+---
+
+## 5. 路线三：内外网双模式混合无缝切换指南
+
+如果你同时按路线一和路线二完成了内网与外网各一次配对：
+- **凭证完全独立**：
+  - 外网配对凭证保存在电脑 `%APPDATA%\clawbridge\config.json`（`deviceToken`）与手机 DataStore；
+  - 内网配对凭证保存在电脑 `config.json`（`lanToken`）+ `lan-pairing.json` 与手机系统级硬件加密库 `AndroidKeyStore`。
+  - 重置或修改其中任何一方，**绝不会影响另一方的配对关系**。
+- **一键秒切**：
+  - 回到家连上 Wi-Fi：在电脑控制台和手机顶部点一下 **「内网直连」**，自动断开外网并建立 `1ms` 局域网通道（此时哪怕家里宽带光猫断外网，局域网收发与传大文件依然正常）；
+  - 准备出门：把电脑控制台切回 **「外网中继」**，出门后手机点一下顶部 **「外网中继」**，免输码直接连上 VPS 远程控制。
+- **绝不静默瞎切 / 绝不无限转圈**：
+  - 为保证连接状态透明可控，系统不做双路同时连接，也不做后台静默回退；如果手机切到了「内网直连」但忘了在电脑端开内网，手机会在几秒内明确提示 **「电脑端未开启内网模式，请在电脑端切换」** 并提供醒目的 **「一键切回外网」** 按钮。
+
+---
+
+## 6. 全功能日常使用详解（手把手说明书）
+
+### 6.1 首页：连接健康度、待确认审批与双端剩余额度条
+- **顶部双模式开关栏**：常驻在「首页」与「会话」页最上方，实时显示当前所处模式（内网 / 外网）、状态圆点与毫秒级往返延迟（`ms`）。
+- **待确认事项与实时审批卡**：当桌面端 Agent 请求执行命令时，首页直接弹出审批卡片，清晰展示命令预览与风险等级（低风险 / 高风险）。
+- **双客户端独立剩余额度看板**：
+  - **Codex 桌面端额度（OpenAI）**：独立展示 5 小时窗口与 7 天周限额的**剩余百分比绿色进度条**、重置倒计时及免费重置券张数；
+  - **Antigravity 客户端额度**：分别展示 **Gemini 模型共享池** 与 **Claude / GPT 附赠池** 的 5 小时 / 7 天剩余比例与精确重置时间。
+
+### 6.2 会话列表页：多维秒搜、双视图与双层秒开缓存
+- **即时全局搜索**：在搜索框输入任意关键词，可同时匹配**会话标题、所属项目名、当前模型名、最新消息预览或会话 ID**。
+- **双视图切换（`时间 | 项目`）**：
+  - `时间` 视图按「置顶 → 进行中 → 今天 / 昨天 / 更早」分组；
+  - `项目` 视图自动把同属一个项目文件夹的多个会话折叠聚合，单会话项目保持平铺不冗余。
+- **来源与状态筛选**：支持一键筛选 `全部 / Antigravity / Codex` 以及 `进行中 / 待确认 / 已完成`。
+- **长按置顶**：长按任意一行会话可将其置顶到列表最上方，或查看完整元数据。
+- **0ms 秒开缓存**：内置内存 LRU + 本地磁盘双层缓存（`SessionDetailCache`），点开历史长对话无需白屏等待，0ms 立即渲染上次内容并在后台静默同步最新增量消息。
+
+### 6.3 在手机上直接给电脑「新建 Project」与更改默认目录
+出门在外想让电脑开启一个全新的开发项目时，无需远程桌面操作文件夹：
+1. 进入手机 **「会话」** 页，点击右上角渐变按钮 **「+ 新建项目」**。
+2. 选择引擎（**Antigravity 项目** 或 **Codex 项目**）。
+3. 输入 **自定义项目文件夹名称**（支持中文、英文、数字、下划线与连字符，自动拦截非法路径符号确保安全）。
+4. 可选点选本次任务的**初始模型**，并输入**首条开发指令**（留空则仅在电脑创建空项目并打开对话窗口）→ 点击 **「创建并进入对话」**。
+5. **修改默认工作区目录**：新建项目默认创建在电脑当前用户的 **C 盘桌面（`C:\Users\<用户名>\Desktop\<文件夹名>`）**。如需改到 `D:\Projects` 等其他盘符，前往手机 **「设置 → 新建项目工作区目录」** 输入电脑目标路径点击 **「保存默认目录」** 即可实时同步到电脑（随时可点「恢复 C 盘桌面」还原）。
+
+### 6.4 对话窗口：发消息、切换模型、传图传文件与下载产物
+- **双向发消息与快捷指令**：底部输入框上方提供快捷胶囊按钮（如 **「继续」**、**「按计划开工」**、**「汇报进度」**），在路上单手点一下即可推进 Agent 继续干活。
+- **会话内实时切换模型**：点击对话页顶栏的模型胶囊标签，即可从弹出的模型列表中实时切换当前会话使用的 Antigravity 或 Codex 模型（内置 5 层防竞态与离线目录缓存保护，切换稳定不回跳）。
+- **手机发图片 / 传文件到电脑**：点击输入框左侧 `+` / 附件按钮，可选择手机相册截图或任意文件（最大 64 MB，256 KB 分片稳定传输），支持直接作为多模态图片随提示词发给 AI，或仅保存到电脑当前项目目录。
+- **一键下载电脑生成的文件 / APK**：AI 回复中提及的本地文件路径（如编译好的 `.apk`、文档、压缩包）或会话产物（Artifacts），点击卡片上的下载按钮即可直接传回手机本地并用系统应用打开安装。
+- **3 秒自动消隐横幅 & 阅读位置记忆**：聊天窗口顶部的模型切换、上传/下载提示横幅会在 **3 秒后自动收起**，绝不遮挡阅读；退出重进任意会话自动定位到上次阅读的位置。
+
+### 6.5 实时输出速度（TPS）与花费预估面板
+- 对话页消息区与输入框之间设有可展开/折叠的实时指标条：
+  - 实时显示 **解码速度（tok/s）**、**首字延迟（TTFT）**、**本次输出 Token 数**、**上下文窗口占用条**、**缓存命中率** 以及按公开 API 挂牌价折算的 **单轮/累计预估花费（`$`）**（估算值诚实标注 `≈`）。
+- **自定义单价表**：电脑端首次运行会自动生成 `%APPDATA%\clawbridge\prices.json`，你可以随时用记事本修改或补充新模型单价，保存后自动热加载生效；若想彻底隐藏该面板，在 `%APPDATA%\clawbridge\config.json` 中设 `"metricsEnabled": false` 即可。
+
+### 6.6 安全 PIN 审批、会话完成通知与手机后台保活
+- **4–6 位安全 PIN 保护**：
+  - 在手机 **「设置 → 安全 PIN 与通知」** 中设置 4~6 位数字 PIN（本地盐值 SHA-256 存储）。
+  - 电脑端遇到高风险操作（如 `rm`、`del`、`format`、安装软件、执行脚本、`git reset --hard` 等，由电脑桥端硬编码判定），无论在内网还是外网模式下，**必须**在手机 App 内输入正确 PIN 才能批准执行；低风险操作则支持在手机锁屏通知栏直接点「批准」。
+- **会话任务结束通知**：
+  - 每个会话本轮任务执行完成时，手机系统通知栏会自动收到一条 **「✅ 任务已完成 · 项目名」** 通知并附带最新回复摘要，点击通知直接跳进对应聊天窗口（可在设置页通过「会话任务结束通知」开关单独启停）。
+- **国产安卓系统后台保活三件套（强烈建议开启）**：
+  进入 App **「设置 → 后台保活配置」**：
+  1. 点击「1. 开启忽略电池优化」，将省电策略选为 **「无限制」**；
+  2. 点击「2. 前往开启后台自启动与锁屏通知权限」，开启 **「自启动 / 允许后台活动」**；
+  3. 在系统通知管理中开启 **「允许锁屏通知」** 与 **「悬浮通知」**。
+
+### 6.7 一键黑夜/白天模式与六大板块自由取色器
+- **一键日/夜切换**：App 首页顶栏、对话页顶栏太阳/月亮图标，点击即可在黑夜模式与清新白天模式间秒切。
+- **自由取色定制**：进入 **「设置 → 外观与主题配色」**，可直接点选 **10 套精选主题预设**，也可点开 **「全局背景底色、卡片与消息面板、顶栏与底栏导航、主按钮与选中态、点睛强调与进度条、我的聊天气泡」** 任意板块，在 2D HSV 取色画布与色相条中自由调配专属颜色（内置明暗对比度自适应保护，文字永远清晰可读，支持一键恢复默认）。
+
+---
+
+## 7. 源码架构、模块地图与二次开发构建指南
+
+### 7.1 系统三端架构图
+
+```text
+                       【模式一：同一 Wi-Fi 内网直连 (免服务器 · 1ms)】
+┌──────────────────────────────┐    UDP 18792 自动发现广播     ┌──────────────────────────────┐
+│                              │ ───────────────────────────► │                              │
+│   Android 客户端 (android/)   │    ws://<电脑IP>:18791       │  Windows 桌面桥 (bridge/)     │
+│  · DualModeTopSwitchBar      │ ◄══════════════════════════► │  · LanServer (lan-server.mjs)│
+│  · ConnectionTransport 接口  │   独立 lanToken (Keystore)   │  · BridgeTransportRouter     │
+│  · LanTransport / RelayTrans │                              │  · LocalIPC (127.0.0.1:18790)│
+└──────────────┬───────────────┘                              └──────────────▲───────────────┘
+               │                                                             │
+               │       【模式二：跨网外网中继 (仅需 VPS 公网 IPv4:8443)】      │
+               │ wss://<VPS_IP>:8443                     wss://<VPS_IP>:8443 │
+               │ (自签 TLS / 域名 TLS)                   (断线退避+休眠唤醒) │
+               ▼                                                             │
+        ┌────────────────────────────────────────────────────────────────────┴─┐
+        │             用户自建 VPS 中继服务 (relay/src/server.mjs)              │
+        │  · 原生 HTTPS/WSS (免 Nginx/免域名) 或 Nginx/Caddy 反代均可           │
+        │  · 仅负责设备 SHA-256 鉴权、6 位配对绑定、帧透传与离线通知队列(200条) │
+        └──────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 核心源码目录地图
+
+- **`relay/`（VPS 轻量中继端）**
+  - `src/server.mjs`：单文件零重依赖中继核心，支持 `RELAY_TLS_CERT` / `RELAY_TLS_KEY` 原生 WSS 直连与反向代理 HTTP 双运行模式。
+  - `src/selftest.mjs`：中继协议自动化回归测试。
+  - `deploy/deploy.sh`：Ubuntu/Debian 一键部署脚本（默认公网 IPv4 免域名自签 TLS 模式，兼容 `--domain` Nginx/Caddy 模式）。
+- **`bridge/`（Windows 桌面桥与托盘 GUI）**
+  - `src/index.mjs`：守护进程主入口与传输无关的业务协议路由器 `attachBusinessProtocolRouter`。
+  - `src/transport-router.mjs`：Protocol v1 Envelope 校验器与 `BridgeTransportRouter` 单路活跃切换器。
+  - `src/lan-server.mjs`：局域网 WebSocket 服务（`18791`）、UDP 广播应答（`18792`）、虚拟网卡过滤、独立内网配对与防爆破限速。
+  - `src/relay-client.mjs`：外网 WSS 客户端（支持裸 IPv4 自签 TLS 自动适配、DoH 解析与休眠唤醒重连）。
+  - `src/antigravity-executor.mjs` / `src/codex-client.mjs` / `src/session-service.mjs` / `src/google-quota.mjs` / `src/metrics-service.mjs` / `src/notification-engine.mjs`：双 AI 引擎接入、新建项目、实时指标与分级通知核心模块。
+  - `src/local-ipc.mjs`：面向本机 GUI 的 `127.0.0.1:18790` 令牌鉴权控制接口。
+  - `desktop-gui/ClawBridgeDesktop.cs` & `ClawBridgeSetup.cs`：C# WPF 原生桌面控制台与一键安装程序源码。
+- **`android/`（Android Jetpack Compose 客户端）**
+  - `net/ConnectionTransport.kt`、`LanTransport.kt`、`RelayTransport.kt`、`RelaySocketClient.kt`：双模式传输抽象与协调器。
+  - `data/LanCredentialStore.kt`、`SettingsStore.kt`、`MonitorRepository.kt`、`SessionDetailCache.kt`：Keystore 加密存储、状态持久化、业务仓库与双层秒开缓存。
+  - `ui/DualModeComponents.kt`、`ClawBridgeScreens.kt`、`SessionDetailScreen.kt`、`Theme.kt`、`ThemeColorPicker.kt`：大尺寸双模式开关、会话/聊天/新建项目与自由取色器界面。
+
+### 7.3 自动化测试与从源码打包命令
+
+```powershell
+# 1. 验证中继端协议自检
+node .\relay\src\selftest.mjs
+
+# 2. 验证桥端双模式回环、UDP 零凭据与安全限速自检 (8 项检查)
+npm --prefix .\bridge run selftest-loopback
+
+# 3. 验证实时速度与单价指标自检
+npm --prefix .\bridge run selftest-metrics
+
+# 4. 重新编译桌面端控制台 ClawBridgeDesktop.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\build-desktop-gui.ps1
+
+# 5. 打包独立 Windows 一键安装程序 setup.exe
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\build-windows-setup.ps1 -Version "2.0.0"
+
+# 6. 运行 Android 单元测试与构建 APK (进入 android 目录)
+cd .\android
+.\gradlew.bat :app:testDebugUnitTest
+.\gradlew.bat :app:assembleDebug
+```
+
+---
+
+## 8. 通信协议规范 (Protocol v1) 与里程碑演进
+
+所有外网中继与内网直连业务帧完全共用同一套 JSON Envelope 结构：
 
 ```json
 {
@@ -67,12 +332,28 @@
 }
 ```
 
-| 类别 | 帧类型 | 方向 | 说明 |
-|---|---|---|---|
-| 鉴权与配对 | `hello` / `hello.ack` / `pair.code.create` / `pair.request` / `pair.result` | 双端 ↔ 中继 | 设备身份校验与 6 位一次性配对 |
-| 心跳与在线 | `ping` / `pong` / `presence` | 双端 ↔ 中继 | 30s 探活与对端在线状态同步 |
-| 配额与模型 | `quota.get` / `quota.data` / `model.list.get` / `session.model.set` | App ↔ Bridge | 双端配额与任务模型切换 |
-| 实时指标 | `metrics.get` / `metrics.data` | App ↔ Bridge | 订阅会话速度、TTFT、token、上下文与预估花费（1Hz 节流） |
-| 会话与对话 | `session.list.get` / `session.open` / `session.stream` / `chat.send` / `chat.ack` | App ↔ Bridge | 会话镜像、实时流与消息投递 |
-| 审批与通知 | `event.notify` / `approval.pending` / `approval.respond` / `approval.ack` | App ↔ Bridge | 分级推送与高风险 PIN 校验 |
-| 文件与产物 | `artifact.get` / `file.download` / `artifact.chunk` / `upload.chunk` / `upload.complete` | App ↔ Bridge | 双向分片文件与图片传输 |
+| 类别 | 帧类型 | 适用通道 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 外网鉴权与配对 | `hello` / `hello.ack` / `pair.code.create` / `pair.request` / `pair.result` | 外网中继 | 设备 SHA-256 鉴权与 6 位一次性配对 |
+| 内网鉴权与配对 | `auth` / `auth.ack` / `auth.error` / `pair.request` / `pair.result` | 内网直连 | 首帧强制校验 `lanToken` 或 6 位内网配对码（5 次失败锁 5 分钟） |
+| 模式与心跳 | `ping` / `pong` / `presence` / `client.mode` | 双模式通用 | 实时往返延迟 `ms` 测量与对端模式状态上报 |
+| 配额与模型 | `quota.get` / `quota.data` / `model.list.get` / `session.model.set` | 双模式通用 | 双端 5h/7d 配额拉取与单会话实时换模型 |
+| 会话与新建项目 | `session.list.get` / `session.open` / `session.stream` / `chat.send` / `project.create` / `projects.config.*` | 双模式通用 | 会话镜像、消息投递、手机新建电脑项目与默认工作目录管理 |
+| 指标、审批与文件 | `metrics.get` / `metrics.data` / `event.notify` / `approval.*` / `artifact.*` / `upload.*` | 双模式通用 | 1Hz 速度花费指标、分级 PIN 审批、任务完成推送与分片传文件 |
+
+---
+
+## 9. 常见问题与排障速查手册 (Troubleshooting)
+
+1. **VPS 部署好了，但电脑/手机填 `VPS_IP:8443` 显示连接超时？**
+   - 99% 是**云厂商网页后台的防火墙/安全组**没放行 `TCP 8443`！Ubuntu 内部的 `ufw` 放行后，还必须在阿里云/腾讯云/AWS/Vultr 网页控制台的「安全组 / Firewall」中添加入站 `TCP 8443` 允许 `0.0.0.0/0`。可在电脑浏览器访问 `https://你的VPS_IP:8443/healthz`（点高级→继续访问），能看到 `{"ok":true,...}` 就说明网络已通。
+2. **手机切「内网直连」提示「未发现电脑，请确认同一 WiFi 或手动输入 IP」？**
+   - ① 检查电脑上的 ClawBridge 控制台顶部是否也切到了 **「⚡ 内网直连」**；
+   - ② 检查电脑 Windows 防火墙是否放行了端口（按第 3.2 节执行那条 PowerShell 防火墙放行命令即可解决）；
+   - ③ 若公司/校园网路由器开启了 AP 隔离屏蔽了广播，直接在手机提示框输入电脑控制台上显示的局域网 IP（如 `192.168.1.100`）点 **「直连」** 即可。
+3. **只用内网直连，没买 VPS，外网地址空着会报错吗？**
+   - 完全不会！两种模式完全独立。只要你把两端顶部大开关切在 **「内网直连」**，外网中继模块处于休眠关闭状态，不会发起任何外网连接。
+4. **手机给 Codex 发消息时，电脑上正好开着 Codex 客户端在看同一个会话怎么办？**
+   - Codex 桌面端对正在打开的会话持有独占文件锁。ClawBridge 已内置自动无损续接机制：检测到独占锁时会自动调用官方 `thread/fork` 继承完整上下文继续执行，并在手机同一聊天窗口无缝合并展示。
+5. **电脑休眠合盖唤醒后需要手动重启桥服务吗？**
+   - 不需要。`PowerMonitor` 会自动监听 Windows 电源唤醒事件，唤醒后 1 秒内自动重连恢复在线。
