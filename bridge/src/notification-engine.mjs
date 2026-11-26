@@ -54,6 +54,9 @@ export class NotificationEngine extends EventEmitter {
     this.seeded = false;
     // key `${source}:${id}` -> { status, title, project, doneDebounceTimer }
     this.sessionStates = new Map();
+    // key `${source}:${id}` -> timestampMs of last emitted task.done (prevents duplicate notifications)
+    this.recentTaskDoneAt = new Map();
+    this.codexTurnTimers = new Map();
     // approvalId -> { approvalId, sessionId, source, title, project, commandPreview, riskLevel, acceptXpath, rejectXpath, createdAt, resolved }
     this.pendingApprovals = new Map();
     this.lastCdpApprovalSig = '';
@@ -80,6 +83,9 @@ export class NotificationEngine extends EventEmitter {
       this.codexClient.on('approval.request', (req) => {
         this._onCodexApprovalRequest(req);
       });
+      this.codexClient.on('turnLifecycle', (evt) => {
+        this._onCodexTurnLifecycle(evt);
+      });
     }
 
     this.cdpPollTimer = setInterval(() => {
@@ -95,6 +101,116 @@ export class NotificationEngine extends EventEmitter {
     }
     for (const st of this.sessionStates.values()) {
       if (st.doneDebounceTimer) clearTimeout(st.doneDebounceTimer);
+    }
+    for (const t of this.codexTurnTimers.values()) {
+      clearTimeout(t);
+    }
+    this.codexTurnTimers.clear();
+  }
+
+  _resolveVisibleCodexSessionId(rawThreadId) {
+    if (!rawThreadId || !this.codexClient?.continuationForks) return rawThreadId;
+    for (const [origId, fk] of this.codexClient.continuationForks.entries()) {
+      if (fk?.forkThreadId === rawThreadId) return origId;
+    }
+    return rawThreadId;
+  }
+
+  _extractLatestReplySummary(source, sessionId, fallbackText = '') {
+    try {
+      const detail = this.sessionService.getSessionDetail(sessionId, source);
+      const msgs = Array.isArray(detail?.messages) ? detail.messages : [];
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i]?.role === 'agent' && msgs[i]?.text) {
+          const clean = String(msgs[i].text)
+            .replace(/```[\s\S]*?```/g, '[代码块]')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (clean) return clean.slice(0, 110);
+        }
+      }
+    } catch { /* ignore */ }
+    return String(fallbackText || '').replace(/\s+/g, ' ').trim().slice(0, 110);
+  }
+
+  _emitSessionTaskDoneOnce({ source, sessionId, title, project, summaryText }) {
+    if (!sessionId) return;
+    const key = `${source}:${sessionId}`;
+    const now = Date.now();
+    const lastAt = this.recentTaskDoneAt.get(key) || 0;
+    if (now - lastAt < 12_000) return;
+    this.recentTaskDoneAt.set(key, now);
+
+    const badge = source === 'codex' ? 'Codex' : 'AGY';
+    const projLabel = project || badge;
+    const cleanSummary = summaryText || '本轮会话任务已执行完毕';
+    this.pushNotify({
+      category: 'task.done',
+      title: `✅ 任务已完成 · ${projLabel} (${badge})`,
+      body: title ? `「${title}」：${cleanSummary}` : cleanSummary,
+      sessionId,
+      source,
+      project: projLabel,
+    });
+  }
+
+  _onCodexTurnLifecycle({ threadId, phase }) {
+    if (!threadId) return;
+    const visibleId = this._resolveVisibleCodexSessionId(threadId);
+    const key = `codex:${visibleId}`;
+
+    if (phase === 'started') {
+      this.recentTaskDoneAt.delete(key);
+      const pendingTimer = this.codexTurnTimers.get(visibleId);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        this.codexTurnTimers.delete(visibleId);
+      }
+      const existing = this.sessionStates.get(key);
+      if (existing) {
+        existing.status = 'running';
+        if (existing.doneDebounceTimer) {
+          clearTimeout(existing.doneDebounceTimer);
+          existing.doneDebounceTimer = null;
+        }
+      } else {
+        this.sessionStates.set(key, {
+          status: 'running',
+          title: `Codex 会话 ${visibleId.slice(0, 8)}`,
+          project: 'Codex',
+          doneDebounceTimer: null,
+        });
+      }
+      return;
+    }
+
+    if (phase === 'completed') {
+      const prevTimer = this.codexTurnTimers.get(visibleId);
+      if (prevTimer) clearTimeout(prevTimer);
+      const timer = setTimeout(() => {
+        this.codexTurnTimers.delete(visibleId);
+        if (this.codexClient?.activeTurns?.has(threadId) || this.codexClient?.activeTurns?.has(visibleId)) {
+          return;
+        }
+        try { this.sessionService._pollSessionListChanges?.(); } catch { /* ignore */ }
+        const list = this.sessionService.listSessions()?.sessions || [];
+        const matched = list.find((s) => s.source === 'codex' && s.id === visibleId);
+        const liveText = this.codexClient?.liveStreams?.get(threadId)?.text || '';
+        const summary = liveText
+          ? String(liveText).replace(/```[\s\S]*?```/g, '[代码块]').replace(/\s+/g, ' ').trim().slice(0, 110)
+          : this._extractLatestReplySummary('codex', visibleId, matched?.preview || '');
+        const st = this.sessionStates.get(key);
+        if (st) st.status = 'done';
+        this._emitSessionTaskDoneOnce({
+          source: 'codex',
+          sessionId: visibleId,
+          title: matched?.title || st?.title || '',
+          project: matched?.project || st?.project || 'Codex',
+          summaryText: summary,
+        });
+      }, 1500);
+      timer.unref?.();
+      this.codexTurnTimers.set(visibleId, timer);
     }
   }
 
@@ -257,8 +373,8 @@ export class NotificationEngine extends EventEmitter {
     const topSession = this.sessionService.listSessions()?.sessions?.[0] || {
       id: '00000000-0000-4000-8000-000000000001',
       source: 'antigravity',
-      title: '示例项目会话',
-      project: 'SampleWorkspace',
+      title: 'Antigravity与Codex项目开发',
+      project: 'ClawBridge',
     };
 
     if (kind === 'sequence_3') {
@@ -413,10 +529,13 @@ export class NotificationEngine extends EventEmitter {
       const oldStatus = prev.status;
       const newStatus = s.status;
 
-      // Cancel pending done timer if session resumed running
-      if (newStatus === 'running' && prev.doneDebounceTimer) {
-        clearTimeout(prev.doneDebounceTimer);
-        prev.doneDebounceTimer = null;
+      // Cancel pending done timer & reset dedup cooldown if session resumed running
+      if (newStatus === 'running') {
+        this.recentTaskDoneAt.delete(key);
+        if (prev.doneDebounceTimer) {
+          clearTimeout(prev.doneDebounceTimer);
+          prev.doneDebounceTimer = null;
+        }
       }
 
       if (oldStatus !== newStatus) {
@@ -424,24 +543,24 @@ export class NotificationEngine extends EventEmitter {
         prev.title = s.title;
         prev.project = s.project;
 
-        // 1. Transition running -> done (debounced 3s so step gaps don't false-fire)
-        if (oldStatus === 'running' && newStatus === 'done') {
+        // 1. Transition running/waiting_approval -> done (debounced 2.2s so step gaps don't false-fire)
+        if ((oldStatus === 'running' || oldStatus === 'waiting_approval') && newStatus === 'done') {
           if (prev.doneDebounceTimer) clearTimeout(prev.doneDebounceTimer);
           prev.doneDebounceTimer = setTimeout(() => {
             prev.doneDebounceTimer = null;
             const latestList = this.sessionService.listSessions()?.sessions || [];
             const cur = latestList.find((x) => x.source === s.source && x.id === s.id);
             if (cur && cur.status === 'done') {
-              this.pushNotify({
-                category: 'task.done',
-                title: `✅ 任务已完成 · ${cur.project}`,
-                body: `${cur.title}：${cur.preview || '本轮任务执行完毕'}`,
-                sessionId: cur.id,
+              const summary = this._extractLatestReplySummary(cur.source, cur.id, cur.preview);
+              this._emitSessionTaskDoneOnce({
                 source: cur.source,
+                sessionId: cur.id,
+                title: cur.title,
                 project: cur.project,
+                summaryText: summary,
               });
             }
-          }, 3000);
+          }, 2200);
           prev.doneDebounceTimer.unref?.();
         }
 

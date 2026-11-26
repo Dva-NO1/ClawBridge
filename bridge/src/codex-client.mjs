@@ -17,6 +17,11 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { promisify } from 'node:util';
 import { logger } from './logger.mjs';
+import {
+  loadModelCatalogCache,
+  saveModelCatalogCache,
+  saveCreatedProjectRecord,
+} from './claw-config.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +30,32 @@ export const LOCKED_CODEX_CLI_VERSION = '0.167.0';
 const ACTIVE_WRITER_RE = /already has an active writer|thread-store conflict/i;
 const ACTIVE_WRITER_RETRY_DELAYS_MS = [900];
 const IDLE_RELEASE_DELAY_MS = 15_000;
+
+function buildFallbackCodexCatalog() {
+  const specs = [
+    { slug: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'], isDefault: true },
+    { slug: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'], isDefault: false },
+    { slug: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'], isDefault: false },
+    { slug: 'gpt-6-astra', name: 'GPT-6 Astra', defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'], isDefault: false },
+    { slug: 'gpt-5.6', name: 'GPT-5.6', defaultEffort: 'medium', efforts: ['low', 'medium', 'high'], isDefault: false },
+  ];
+  const out = [];
+  for (const s of specs) {
+    for (const eff of s.efforts) {
+      const effCap = eff === 'xhigh' ? 'XHigh' : eff.charAt(0).toUpperCase() + eff.slice(1);
+      out.push({
+        modelId: `${s.slug}#${eff}`,
+        label: `${s.name} (${effCap})`,
+        source: 'codex',
+        tag: s.isDefault && eff === s.defaultEffort ? 'Default' : '',
+        description: 'OpenAI Codex 模型',
+        remainingPercent: null,
+        resetTimeIso: null,
+      });
+    }
+  }
+  return out;
+}
 
 export const FRIENDLY_ACTIVE_WRITER_MESSAGE =
   '该 Codex 会话正被电脑端 Codex 客户端独占锁定，且自动续接失败，请关闭电脑 Codex 客户端后再重试';
@@ -82,7 +113,8 @@ export class CodexAppServerClient extends EventEmitter {
     this.restartTimer = null;
     this.cachedThreads = [];
     this.cachedRateLimits = null;
-    this.cachedModels = [];
+    const diskCodexModels = loadModelCatalogCache()?.codex;
+    this.cachedModels = Array.isArray(diskCodexModels) && diskCodexModels.length > 0 ? diskCodexModels : [];
 
     // Single-writer lifecycle tracking
     this.loadedThreads = new Set(); // threadIds currently loaded in our single app-server
@@ -258,7 +290,7 @@ export class CodexAppServerClient extends EventEmitter {
       {
         clientInfo: {
           name: 'clawbridge-desktop',
-          version: '1.1.0',
+          version: '1.9.0',
         },
       },
       8000
@@ -612,6 +644,7 @@ export class CodexAppServerClient extends EventEmitter {
       }
       if (expanded.length > 0) {
         this.cachedModels = expanded;
+        saveModelCatalogCache({ codex: expanded });
       }
     }
 
@@ -691,11 +724,133 @@ export class CodexAppServerClient extends EventEmitter {
     return this.cachedRateLimits;
   }
 
-  async getModelCatalog() {
-    if (this.cachedModels.length === 0 && this.ready) {
-      await this.refreshThreadsAndLimits().catch(() => {});
+  async getModelCatalog({ forceRefresh = false } = {}) {
+    if ((forceRefresh || this.cachedModels.length === 0) && this.ready) {
+      try {
+        const res = await this.callRpc('model/list', {}, 8000);
+        if (Array.isArray(res?.data) && res.data.length > 0) {
+          const expanded = [];
+          for (const m of res.data) {
+            if (m.hidden || !m.model) continue;
+            const baseName = m.displayName || m.model;
+            const efforts = Array.isArray(m.supportedReasoningEfforts)
+              ? m.supportedReasoningEfforts.map((e) => e.reasoningEffort).filter((e) => ['low', 'medium', 'high', 'xhigh'].includes(e))
+              : [];
+            if (efforts.length > 0) {
+              for (const eff of efforts) {
+                const effCap = eff === 'xhigh' ? 'XHigh' : eff.charAt(0).toUpperCase() + eff.slice(1);
+                expanded.push({
+                  modelId: `${m.model}#${eff}`,
+                  label: `${baseName} (${effCap})`,
+                  source: 'codex',
+                  tag: m.isDefault && eff === m.defaultReasoningEffort ? 'Default' : '',
+                  description: m.description || '',
+                  remainingPercent: null,
+                  resetTimeIso: null,
+                });
+              }
+            } else {
+              expanded.push({
+                modelId: m.model,
+                label: baseName,
+                source: 'codex',
+                tag: m.isDefault ? 'Default' : '',
+                description: m.description || '',
+                remainingPercent: null,
+                resetTimeIso: null,
+              });
+            }
+          }
+          if (expanded.length > 0) {
+            this.cachedModels = expanded;
+            saveModelCatalogCache({ codex: expanded });
+          }
+        }
+      } catch (err) {
+        logger.warn('Codex', `model/list RPC fallback triggered: ${err.message}`);
+      }
+    }
+    if (this.cachedModels.length === 0) {
+      this.cachedModels = buildFallbackCodexCatalog();
     }
     return this.cachedModels;
+  }
+
+  applyThreadModelChoice(threadId, modelId, modelLabel) {
+    const forkId = this.continuationForks.get(threadId)?.forkThreadId || '';
+    const cleanBase = String(modelId || '').split('#')[0];
+    for (const t of this.cachedThreads) {
+      if (t.id === threadId || (forkId && t.id === forkId)) {
+        t.currentModelId = modelId;
+        t.currentModelLabel = modelLabel || cleanBase || modelId;
+      }
+    }
+  }
+
+  async createProjectThread({ workspaceDir, title, modelSpec = '', initialPrompt = '' } = {}) {
+    const readyOk = await this._waitUntilReady(10_000);
+    if (!readyOk) {
+      throw new Error('Codex app-server 尚未就绪，请稍后重试');
+    }
+    const absDir = path.resolve(workspaceDir);
+    fs.mkdirSync(absDir, { recursive: true });
+    const projectName = path.basename(absDir);
+    const cleanTitle = String(title || projectName).trim() || projectName;
+    const [baseModel] = String(modelSpec || '').trim().split('#');
+
+    const startParams = { cwd: absDir };
+    if (baseModel) startParams.model = baseModel;
+
+    const startRes = await this.callRpc('thread/start', startParams, 12_000);
+    const newThreadId = String(startRes?.thread?.id || '').trim();
+    if (!newThreadId) {
+      throw new Error('Codex thread/start 未返回有效的 threadId');
+    }
+    this.loadedThreads.add(newThreadId);
+    await this.callRpc('thread/name/set', { threadId: newThreadId, name: cleanTitle }, 5000).catch(() => {});
+
+    const cleanPrompt = String(initialPrompt || '').trim();
+    if (cleanPrompt) {
+      await this.sendMessageToThread(newThreadId, cleanPrompt, {
+        modelSpec,
+        allowForkOnExternalLock: false,
+      });
+    } else {
+      this._scheduleIdleRelease(newThreadId, 'project_created');
+    }
+
+    await this.refreshThreadsAndLimits().catch(() => {});
+    const wsPosix = absDir.replace(/\\/g, '/');
+    const matchedLabel =
+      this.cachedModels.find((m) => m.modelId === modelSpec)?.label ||
+      this.cachedModels.find((m) => m.modelId.startsWith(`${baseModel}#`))?.label ||
+      modelSpec ||
+      baseModel ||
+      '';
+    saveCreatedProjectRecord(newThreadId, {
+      source: 'codex',
+      title: cleanTitle,
+      project: projectName,
+      workspacePath: wsPosix,
+      currentModelId: modelSpec || baseModel || '',
+      currentModelLabel: matchedLabel,
+    });
+    logger.info('Codex', `Created new Codex project "${projectName}" (${absDir}) -> thread ${newThreadId.slice(0, 8)}`);
+    return {
+      id: newThreadId,
+      source: 'codex',
+      title: cleanTitle,
+      project: projectName,
+      workspacePath: wsPosix,
+      preview: cleanPrompt ? cleanPrompt.slice(0, 100) : `新建 Codex 项目：${wsPosix}`,
+      status: cleanPrompt ? 'running' : 'done',
+      stepCount: cleanPrompt ? 1 : 0,
+      subagentCount: 0,
+      runningSubagentCount: 0,
+      updatedAt: Date.now(),
+      currentModelId: modelSpec || baseModel || '',
+      currentModelLabel: matchedLabel,
+    };
   }
 
   async _forkLockedThread(originalThreadId) {
@@ -920,7 +1075,21 @@ export class CodexAppServerClient extends EventEmitter {
     }
 
     try {
-      const turnRes = await this.callRpc('turn/start', turnParams, 15_000);
+      let turnRes;
+      try {
+        turnRes = await this.callRpc('turn/start', turnParams, 15_000);
+      } catch (firstErr) {
+        const em = String(firstErr?.message || '');
+        // Auto-recover if selected model rejects reasoning effort parameter
+        if (turnParams.effort && !ACTIVE_WRITER_RE.test(em)) {
+          logger.warn('Codex', `Retrying turn/start without effort="${turnParams.effort}" after error: ${em}`);
+          const retryParams = { ...turnParams };
+          delete retryParams.effort;
+          turnRes = await this.callRpc('turn/start', retryParams, 15_000);
+        } else {
+          throw firstErr;
+        }
+      }
       const turnId = turnRes?.turn?.id || turnRes?.turnId || 'active';
       this.activeTurns.set(targetThreadId, turnId);
       logger.info(

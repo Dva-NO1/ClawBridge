@@ -8,6 +8,10 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.clawbridge.mobile.net.ConnectionMode
+import com.clawbridge.mobile.ui.SectionColorOverrides
+import com.clawbridge.mobile.ui.ThemeConfig
+import com.clawbridge.mobile.ui.ThemeSectionKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -27,12 +31,16 @@ data class AppSettings(
     val pinSalt: String = "",
     val requirePinForSend: Boolean = false,
     val notificationsEnabled: Boolean = true,
+    val taskDoneNotifyEnabled: Boolean = true,
     val dndEnabled: Boolean = false,
     val dndStart: String = "23:30",
     val dndEnd: String = "07:00",
     val morningSchedule: String = "07:30",
     val nightSchedule: String = "23:00",
     val pinnedSessionIds: Set<String> = emptySet(),
+    val projectsRootDir: String = "",
+    val connectionMode: ConnectionMode = ConnectionMode.WAN,
+    val themeConfig: ThemeConfig = ThemeConfig(),
 ) {
     val isPaired: Boolean
         get() = deviceToken.isNotBlank() && pairedBridgeId.isNotBlank()
@@ -60,15 +68,24 @@ class SettingsStore(private val context: Context) {
         val PIN_SALT = stringPreferencesKey("pin_salt")
         val REQUIRE_PIN_FOR_SEND = booleanPreferencesKey("require_pin_for_send")
         val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+        val TASK_DONE_NOTIFY_ENABLED = booleanPreferencesKey("task_done_notify_enabled")
         val DND_ENABLED = booleanPreferencesKey("dnd_enabled")
         val DND_START = stringPreferencesKey("dnd_start")
         val DND_END = stringPreferencesKey("dnd_end")
         val MORNING_SCHEDULE = stringPreferencesKey("morning_schedule")
         val NIGHT_SCHEDULE = stringPreferencesKey("night_schedule")
         val PINNED_SESSIONS = stringSetPreferencesKey("pinned_session_ids")
+        val PROJECTS_ROOT_DIR = stringPreferencesKey("projects_root_dir")
+        val CONNECTION_MODE = stringPreferencesKey("connection_mode")
+        val THEME_DARK_MODE = booleanPreferencesKey("theme_dark_mode")
+        val THEME_DARK_OVERRIDES = stringPreferencesKey("theme_dark_overrides")
+        val THEME_LIGHT_OVERRIDES = stringPreferencesKey("theme_light_overrides")
     }
 
     val settingsFlow: Flow<AppSettings> = context.dataStore.data.map { p ->
+        val isDark = p[Keys.THEME_DARK_MODE] ?: true
+        val darkOv = SectionColorOverrides.deserialize(p[Keys.THEME_DARK_OVERRIDES] ?: "")
+        val lightOv = SectionColorOverrides.deserialize(p[Keys.THEME_LIGHT_OVERRIDES] ?: "")
         AppSettings(
             relayUrl = p[Keys.RELAY_URL]?.takeIf { it.isNotBlank() } ?: AppSettings.DEFAULT_RELAY_URL,
             deviceId = p[Keys.DEVICE_ID] ?: "",
@@ -79,13 +96,68 @@ class SettingsStore(private val context: Context) {
             pinSalt = p[Keys.PIN_SALT] ?: "",
             requirePinForSend = p[Keys.REQUIRE_PIN_FOR_SEND] ?: false,
             notificationsEnabled = p[Keys.NOTIFICATIONS_ENABLED] ?: true,
+            taskDoneNotifyEnabled = p[Keys.TASK_DONE_NOTIFY_ENABLED] ?: true,
             dndEnabled = p[Keys.DND_ENABLED] ?: false,
             dndStart = p[Keys.DND_START] ?: "23:30",
             dndEnd = p[Keys.DND_END] ?: "07:00",
             morningSchedule = p[Keys.MORNING_SCHEDULE] ?: "07:30",
             nightSchedule = p[Keys.NIGHT_SCHEDULE] ?: "23:00",
             pinnedSessionIds = p[Keys.PINNED_SESSIONS] ?: emptySet(),
+            projectsRootDir = p[Keys.PROJECTS_ROOT_DIR] ?: "",
+            connectionMode = ConnectionMode.fromWire(p[Keys.CONNECTION_MODE]),
+            themeConfig = ThemeConfig(
+                isDarkMode = isDark,
+                darkOverrides = darkOv,
+                lightOverrides = lightOv,
+            ),
         )
+    }
+
+    suspend fun setConnectionMode(mode: ConnectionMode) {
+        context.dataStore.edit { p ->
+            p[Keys.CONNECTION_MODE] = mode.wireValue
+        }
+    }
+
+    suspend fun setDarkMode(isDark: Boolean) {
+        context.dataStore.edit { p ->
+            p[Keys.THEME_DARK_MODE] = isDark
+        }
+    }
+
+    suspend fun toggleDarkMode() {
+        context.dataStore.edit { p ->
+            val cur = p[Keys.THEME_DARK_MODE] ?: true
+            p[Keys.THEME_DARK_MODE] = !cur
+        }
+    }
+
+    suspend fun updateSectionColor(isDark: Boolean, section: ThemeSectionKey, argb: Int?) {
+        context.dataStore.edit { p ->
+            val key = if (isDark) Keys.THEME_DARK_OVERRIDES else Keys.THEME_LIGHT_OVERRIDES
+            val cur = SectionColorOverrides.deserialize(p[key] ?: "")
+            p[key] = cur.withColor(section, argb).serialize()
+        }
+    }
+
+    suspend fun applyThemePreset(isDark: Boolean, overrides: SectionColorOverrides) {
+        context.dataStore.edit { p ->
+            val key = if (isDark) Keys.THEME_DARK_OVERRIDES else Keys.THEME_LIGHT_OVERRIDES
+            p[key] = overrides.serialize()
+        }
+    }
+
+    suspend fun resetCurrentModeColors(isDark: Boolean) {
+        context.dataStore.edit { p ->
+            val key = if (isDark) Keys.THEME_DARK_OVERRIDES else Keys.THEME_LIGHT_OVERRIDES
+            p[key] = ""
+        }
+    }
+
+    suspend fun saveCachedProjectsRootDir(dir: String) {
+        context.dataStore.edit { p ->
+            p[Keys.PROJECTS_ROOT_DIR] = dir.trim()
+        }
     }
 
     suspend fun togglePinSession(sessionId: String) {
@@ -188,10 +260,12 @@ class SettingsStore(private val context: Context) {
         dndEnd: String? = null,
         morningSchedule: String? = null,
         nightSchedule: String? = null,
+        taskDoneNotifyEnabled: Boolean? = null,
     ) {
         context.dataStore.edit { p ->
             requirePinForSend?.let { p[Keys.REQUIRE_PIN_FOR_SEND] = it }
             notificationsEnabled?.let { p[Keys.NOTIFICATIONS_ENABLED] = it }
+            taskDoneNotifyEnabled?.let { p[Keys.TASK_DONE_NOTIFY_ENABLED] = it }
             dndEnabled?.let { p[Keys.DND_ENABLED] = it }
             dndStart?.let { p[Keys.DND_START] = it }
             dndEnd?.let { p[Keys.DND_END] = it }

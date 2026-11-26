@@ -50,7 +50,17 @@ function readJsonBody(req) {
   });
 }
 
-export function startLocalControlServer({ relay, quotaService, codexClient, sessionService, notificationEngine, onShutdown }) {
+export function startLocalControlServer({
+  relay,
+  lanServer = null,
+  transportRouter = null,
+  quotaService,
+  codexClient,
+  sessionService,
+  notificationEngine,
+  onShutdown,
+  port = LOCAL_IPC_PORT,
+}) {
   const ipcToken = loadOrCreateIpcToken();
 
   const server = http.createServer(async (req, res) => {
@@ -69,11 +79,17 @@ export function startLocalControlServer({ relay, quotaService, codexClient, sess
 
     try {
       if (req.method === 'GET' && url === '/api/status') {
-        const q = quotaService.cached || null;
+        const q = quotaService?.cached || null;
+        const lanIps = lanServer ? lanServer.getLanIps() : [];
+        const activeMode = transportRouter ? transportRouter.mode : relay.config.lanEnabled ? 'lan' : 'wan';
         return send(200, {
           ok: true,
           pid: process.pid,
           uptimeSec: Math.floor(process.uptime()),
+          connectionMode: activeMode,
+          lastConnectionMode: relay.config.lastConnectionMode || activeMode,
+          peerConnectionMode: transportRouter?.peerConnectionMode || '',
+          // WAN Relay status
           manualPaused: relay.manualPaused,
           running: relay.running,
           connected: relay.connected,
@@ -87,8 +103,24 @@ export function startLocalControlServer({ relay, quotaService, codexClient, sess
           deviceIdShort: (relay.config.deviceId || '').slice(0, 12),
           pairingCode: relay.currentPairingCode || '',
           pairingExpiresAt: relay.pairingExpiresAt || 0,
-          cdpAvailable: Boolean(sessionService.cdpStatus?.available),
-          cdpNote: sessionService.cdpStatus?.note || '',
+          // LAN Direct status (strictly redacted: zero lanToken exposure)
+          lanEnabled: Boolean(relay.config.lanEnabled),
+          lanRunning: Boolean(lanServer?.running),
+          lanPort: Number(lanServer?.port || relay.config.lanPort || 18791),
+          lanDiscoveryPort: Number(lanServer?.discoveryPort || 18792),
+          lanIps,
+          lanPrimaryIp: lanIps[0] || '',
+          lanBindError: lanServer?.bindError || '',
+          lanUdpWarning: lanServer?.udpBindError || '',
+          lanPaired: Boolean(lanServer?.paired),
+          lanPairedDeviceName: lanServer?.pairedDeviceName || '',
+          lanConnectedPhoneIp: lanServer?.connectedClientIp || '',
+          lanPeerOnline: Boolean(lanServer?.peerOnline),
+          lanLastRttMs: lanServer?.lastRttMs ?? null,
+          lanPairingCode: lanServer?.currentPairingCode || '',
+          lanPairingExpiresAt: lanServer?.pairingExpiresAt || 0,
+          cdpAvailable: Boolean(sessionService?.cdpStatus?.available),
+          cdpNote: sessionService?.cdpStatus?.note || '',
           quota: q
             ? {
                 planName: q.planName,
@@ -111,17 +143,57 @@ export function startLocalControlServer({ relay, quotaService, codexClient, sess
         });
       }
 
+      if (req.method === 'POST' && url === '/api/mode') {
+        const body = await readJsonBody(req);
+        const mode = String(body.mode || '').trim().toLowerCase() === 'lan' ? 'lan' : 'wan';
+        if (!transportRouter) {
+          return send(500, { ok: false, error: 'transportRouter unavailable' });
+        }
+        const resObj = await transportRouter.setMode(mode);
+        return send(200, resObj);
+      }
+
+      if (req.method === 'POST' && url === '/api/lan/new-pair-code') {
+        if (!lanServer) {
+          return send(400, { ok: false, error: 'lanServer unavailable' });
+        }
+        const info = lanServer.regeneratePairingCode({ forceUnpair: false });
+        return send(200, { ok: Boolean(info), ...(info || {}) });
+      }
+
+      if (req.method === 'POST' && url === '/api/lan/unpair') {
+        if (!lanServer) {
+          return send(400, { ok: false, error: 'lanServer unavailable' });
+        }
+        const ok = lanServer.unpairAndRequestNewCode();
+        return send(200, { ok });
+      }
+
       if (req.method === 'POST' && url === '/api/connect') {
+        if (relay.config.lanEnabled && transportRouter) {
+          const resObj = await transportRouter.setMode('wan');
+          relay.connectManually();
+          return send(200, resObj);
+        }
         relay.connectManually();
         return send(200, { ok: true });
       }
 
       if (req.method === 'POST' && url === '/api/disconnect') {
+        if (relay.config.lanEnabled && lanServer) {
+          await lanServer.stop();
+          return send(200, { ok: true, mode: 'lan', lanRunning: false });
+        }
         relay.disconnectManually();
         return send(200, { ok: true });
       }
 
       if (req.method === 'POST' && url === '/api/reconnect') {
+        if (relay.config.lanEnabled && lanServer) {
+          await lanServer.stop();
+          const startRes = await lanServer.start();
+          return send(200, { ok: startRes.ok, mode: 'lan', lanRunning: lanServer.running, error: startRes.error || null });
+        }
         relay.connectManually();
         relay.forceReconnectNow('desktop_ui_reconnect');
         return send(200, { ok: true });
@@ -188,16 +260,16 @@ export function startLocalControlServer({ relay, quotaService, codexClient, sess
   });
 
   server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      logger.warn('LocalIPC', `Another ClawBridge daemon is already listening on 127.0.0.1:${LOCAL_IPC_PORT}; exiting duplicate instance`);
+    if (err.code === 'EADDRINUSE' && port === LOCAL_IPC_PORT) {
+      logger.warn('LocalIPC', `Another ClawBridge daemon is already listening on 127.0.0.1:${port}; exiting duplicate instance`);
       process.exit(0);
     } else {
       logger.error('LocalIPC', `Control server error: ${err.message}`);
     }
   });
 
-  server.listen(LOCAL_IPC_PORT, '127.0.0.1', () => {
-    logger.info('LocalIPC', `Desktop GUI control server ready on http://127.0.0.1:${LOCAL_IPC_PORT}`);
+  server.listen(port, '127.0.0.1', () => {
+    logger.info('LocalIPC', `Desktop GUI control server ready on http://127.0.0.1:${port}`);
   });
 
   return server;

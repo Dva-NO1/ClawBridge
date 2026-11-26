@@ -11,7 +11,7 @@ namespace ClawBridgeSetup
 {
     static class Program
     {
-        private const string AppVersion = "1.1.0";
+        private const string AppVersion = "2.0.0";
 
         [STAThread]
         static int Main(string[] args)
@@ -194,7 +194,7 @@ namespace ClawBridgeSetup
 
                 var sub = new Label
                 {
-                    Text = "包含零黑窗托盘宿主 (ClawBridgeDesktop.exe) 与完整桥依赖。\n安装后请在桌面控制台填入你自建的 VPS 中继地址即可配对手机。",
+                    Text = "包含零黑窗托盘控制台 (ClawBridgeDesktop.exe) 与双模式桥接引擎。\n支持同一 WiFi「内网直连」免服务器极速通信，或填写自建 VPS 中继跨网远程管理。",
                     ForeColor = Color.FromArgb(155, 155, 155),
                     Location = new Point(24, 52),
                     Size = new Size(472, 42)

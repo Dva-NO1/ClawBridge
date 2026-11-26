@@ -8,8 +8,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
+import com.clawbridge.mobile.net.ConnectionTransport
 import com.clawbridge.mobile.net.RelayFrame
-import com.clawbridge.mobile.net.RelaySocketClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -42,10 +42,11 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class MonitorRepository(
     context: Context,
-    private val socketClient: RelaySocketClient,
+    private val socketClient: ConnectionTransport,
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -61,7 +62,30 @@ class MonitorRepository(
     val cdpNote: StateFlow<String> = _cdpNote.asStateFlow()
 
     private val _antigravityModels = MutableStateFlow<List<ModelOptionUi>>(emptyList())
+    val antigravityModels: StateFlow<List<ModelOptionUi>> = _antigravityModels.asStateFlow()
+
     private val _codexModels = MutableStateFlow<List<ModelOptionUi>>(emptyList())
+    val codexModels: StateFlow<List<ModelOptionUi>> = _codexModels.asStateFlow()
+
+    private val _workspaceConfig = MutableStateFlow(WorkspaceConfigState())
+    val workspaceConfig: StateFlow<WorkspaceConfigState> = _workspaceConfig.asStateFlow()
+
+    private val _projectCreation = MutableStateFlow(ProjectCreationState())
+    val projectCreation: StateFlow<ProjectCreationState> = _projectCreation.asStateFlow()
+
+    private val feedbackSeq = AtomicLong(1L)
+    private fun nextSeq(): Long = feedbackSeq.incrementAndGet()
+
+    private data class PendingModelSwitch(
+        val sessionId: String,
+        val source: String,
+        val modelId: String,
+        val modelLabel: String,
+        val expiresAt: Long,
+    )
+
+    @Volatile
+    private var pendingModelSwitch: PendingModelSwitch? = null
 
     // Two-layer LRU + disk cache for instant session open while live snapshot syncs
     private val detailCache = SessionDetailCache(appContext, maxEntries = 20)
@@ -103,6 +127,7 @@ class MonitorRepository(
 
     init {
         loadRecentSessionsFromDisk()
+        loadWorkspaceConfigFromDisk()
 
         socketClient.incomingFrames
             .onEach { frame -> handleFrame(frame) }
@@ -118,6 +143,7 @@ class MonitorRepository(
                     refreshSessions()
                     refreshModels(force = false)
                     refreshApprovals()
+                    requestProjectsConfig()
                     // Re-subscribe open session & fetch latest metrics snapshot if user is viewing one
                     _activeDetail.value?.session?.let { open ->
                         socketClient.sendEnvelope(
@@ -162,15 +188,39 @@ class MonitorRepository(
 
     fun setSessionModel(sessionId: String, source: String, modelId: String, modelLabel: String) {
         if (sessionId.isBlank() || modelId.isBlank()) return
+        val prevDetail = _activeDetail.value?.takeIf { it.session.id == sessionId }
+        val prevId = prevDetail?.session?.currentModelId.orEmpty()
+        val prevLabel = prevDetail?.session?.currentModelLabel.orEmpty()
+
+        pendingModelSwitch = PendingModelSwitch(
+            sessionId = sessionId,
+            source = source,
+            modelId = modelId,
+            modelLabel = modelLabel,
+            expiresAt = System.currentTimeMillis() + 6_000L,
+        )
+
         _activeDetail.update { cur ->
             if (cur == null || cur.session.id != sessionId) cur
-            else cur.copy(
-                session = cur.session.copy(
-                    currentModelId = modelId,
-                    currentModelLabel = modelLabel
+            else {
+                val updated = cur.copy(
+                    session = cur.session.copy(
+                        currentModelId = modelId,
+                        currentModelLabel = modelLabel
+                    )
                 )
-            )
+                detailCache.put(updated)
+                updated
+            }
         }
+        _sessions.update { list ->
+            list.map { item ->
+                if (item.id == sessionId && item.source == source) {
+                    item.copy(currentModelId = modelId, currentModelLabel = modelLabel)
+                } else item
+            }
+        }
+
         val sent = socketClient.sendEnvelope(
             "session.model.set",
             buildJsonObject {
@@ -181,8 +231,89 @@ class MonitorRepository(
             }
         )
         if (!sent) {
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "桌面未连接，模型切换未保存", isError = true)
+            pendingModelSwitch = null
+            if (prevDetail != null) {
+                _activeDetail.update { cur ->
+                    if (cur == null || cur.session.id != sessionId) cur
+                    else cur.copy(session = cur.session.copy(currentModelId = prevId, currentModelLabel = prevLabel))
+                }
+            }
+            _actionFeedback.value = ActionFeedbackState(
+                sending = false,
+                banner = "桌面未连接，模型切换未保存",
+                isError = true,
+                seq = nextSeq(),
+            )
         }
+    }
+
+    fun requestProjectsConfig() {
+        socketClient.sendEnvelope("projects.config.get", buildJsonObject { })
+    }
+
+    fun updateProjectsRootDir(newDir: String, resetDefault: Boolean = false) {
+        _workspaceConfig.update { it.copy(saving = true, feedbackMessage = null, isError = false) }
+        val sent = socketClient.sendEnvelope(
+            "projects.config.set",
+            buildJsonObject {
+                put("projectsRootDir", JsonPrimitive(newDir.trim()))
+                put("resetDefault", JsonPrimitive(resetDefault))
+            }
+        )
+        if (!sent) {
+            _workspaceConfig.update {
+                it.copy(
+                    saving = false,
+                    feedbackMessage = "桌面桥未连接，无法同步修改电脑工作目录",
+                    isError = true,
+                    seq = nextSeq(),
+                )
+            }
+        }
+    }
+
+    fun clearWorkspaceConfigFeedback() {
+        _workspaceConfig.update { it.copy(feedbackMessage = null, isError = false) }
+    }
+
+    fun createNewProject(
+        projectName: String,
+        source: String,
+        modelId: String = "",
+        modelLabel: String = "",
+        initialPrompt: String = "",
+    ) {
+        val cleanName = projectName.trim()
+        if (cleanName.isEmpty()) {
+            _projectCreation.value = ProjectCreationState(
+                creating = false,
+                error = "请输入新项目的文件夹名称",
+                seq = nextSeq(),
+            )
+            return
+        }
+        _projectCreation.value = ProjectCreationState(creating = true, error = null, seq = nextSeq())
+        val sent = socketClient.sendEnvelope(
+            "project.create",
+            buildJsonObject {
+                put("projectName", JsonPrimitive(cleanName))
+                put("source", JsonPrimitive(source))
+                if (modelId.isNotBlank()) put("modelId", JsonPrimitive(modelId))
+                if (modelLabel.isNotBlank()) put("modelLabel", JsonPrimitive(modelLabel))
+                if (initialPrompt.isNotBlank()) put("initialPrompt", JsonPrimitive(initialPrompt.trim()))
+            }
+        )
+        if (!sent) {
+            _projectCreation.value = ProjectCreationState(
+                creating = false,
+                error = "桌面桥未连接，无法在电脑上新建项目文件夹",
+                seq = nextSeq(),
+            )
+        }
+    }
+
+    fun clearProjectCreationError() {
+        _projectCreation.update { it.copy(error = null) }
     }
 
     fun triggerDeepLinkApprovalPrompt(approvalId: String, riskLevel: String, action: String) {
@@ -236,7 +367,7 @@ class MonitorRepository(
             }
         )
         if (!sent) {
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "桌面未连接，消息未发送", isError = true)
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "桌面未连接，消息未发送", isError = true, seq = nextSeq())
         }
     }
 
@@ -275,7 +406,7 @@ class MonitorRepository(
             }
         )
         if (!sent) {
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "桌面未连接，快捷指令未发送", isError = true)
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "桌面未连接，快捷指令未发送", isError = true, seq = nextSeq())
         }
     }
 
@@ -291,7 +422,7 @@ class MonitorRepository(
             }
         )
         if (!sent) {
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "连接中断，审批发送失败", isError = true)
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "连接中断，审批发送失败", isError = true, seq = nextSeq())
         }
     }
 
@@ -630,6 +761,8 @@ class MonitorRepository(
             "session.stream" -> handleSessionStream(frame.payload)
             "model.list" -> handleModelList(frame.payload)
             "session.model.ack" -> handleSessionModelAck(frame.payload)
+            "projects.config.data" -> handleProjectsConfigData(frame.payload)
+            "project.create.ack" -> handleProjectCreateAck(frame.payload)
             "artifact.data" -> handleArtifactData(frame.payload)
             "artifact.chunk" -> handleArtifactChunk(frame.payload)
             "upload.ack" -> handleUploadAck(frame.payload)
@@ -647,7 +780,8 @@ class MonitorRepository(
                 _actionFeedback.value = ActionFeedbackState(
                     sending = false,
                     banner = "桌面桥当前离线，写操作未执行",
-                    isError = true
+                    isError = true,
+                    seq = nextSeq(),
                 )
             }
         }
@@ -689,10 +823,10 @@ class MonitorRepository(
         if (ok) {
             _pendingApprovals.update { list -> list.filterNot { it.approvalId == aid } }
             val word = if (decision == "approve") "已批准执行" else "已拒绝操作"
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "✅ $word", isError = false)
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = word, isError = false, seq = nextSeq())
         } else {
             val msg = p["message"]?.jsonPrimitive?.contentOrNull ?: "审批操作未通过"
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = msg, isError = true)
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = msg, isError = true, seq = nextSeq())
         }
     }
 
@@ -700,8 +834,8 @@ class MonitorRepository(
         val ok = p["ok"]?.jsonPrimitive?.booleanOrNull ?: false
         if (ok) {
             val customMsg = p["message"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-            val banner = if (customMsg.isNotEmpty()) "✅ $customMsg" else "✅ 消息已送达桌面会话"
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = banner, isError = false)
+            val banner = customMsg.ifEmpty { "消息已送达桌面会话" }
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = banner, isError = false, seq = nextSeq())
         } else {
             // Rollback optimistic local bubble when delivery fails so UI never fakes delivery
             _activeDetail.update { cur ->
@@ -722,7 +856,7 @@ class MonitorRepository(
             } else {
                 rawErr
             }
-            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "发送失败：$friendlyErr", isError = true)
+            _actionFeedback.value = ActionFeedbackState(sending = false, banner = "发送失败：$friendlyErr", isError = true, seq = nextSeq())
         }
     }
 
@@ -732,8 +866,8 @@ class MonitorRepository(
         if (ok) {
             val savedPath = p["savedPath"]?.jsonPrimitive?.contentOrNull ?: ""
             val delivered = p["deliveredToChat"]?.jsonPrimitive?.booleanOrNull ?: false
-            val msg = if (delivered) "✅ 已发送至桌面会话并保存：$savedPath"
-            else "✅ 文件已实时上传至电脑：$savedPath"
+            val msg = if (delivered) "已发送至桌面会话并保存：$savedPath"
+            else "文件已实时上传至电脑：$savedPath"
             _uploadStatus.value = UploadStatusState(
                 active = false,
                 fileName = name,
@@ -907,33 +1041,118 @@ class MonitorRepository(
         }
     }
 
+    private fun handleProjectsConfigData(p: JsonObject) {
+        val ok = p["ok"]?.jsonPrimitive?.booleanOrNull ?: true
+        val rootDir = p["projectsRootDir"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val defaultDir = p["defaultDesktopDir"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val updated = p["updated"]?.jsonPrimitive?.booleanOrNull ?: false
+        val msg = p["message"]?.jsonPrimitive?.contentOrNull?.trim()
+        val err = p["error"]?.jsonPrimitive?.contentOrNull?.trim()
+
+        val effectiveRoot = rootDir.ifBlank { _workspaceConfig.value.projectsRootDir }
+        val effectiveDefault = defaultDir.ifBlank { _workspaceConfig.value.defaultDesktopDir }
+        if (effectiveRoot.isNotBlank() || effectiveDefault.isNotBlank()) {
+            saveWorkspaceConfigToDisk(effectiveRoot, effectiveDefault)
+        }
+
+        _workspaceConfig.value = WorkspaceConfigState(
+            projectsRootDir = effectiveRoot,
+            defaultDesktopDir = effectiveDefault,
+            saving = false,
+            feedbackMessage = when {
+                !ok -> err ?: "保存项目工作目录失败"
+                updated -> msg ?: "默认项目工作目录已更新"
+                else -> null
+            },
+            isError = !ok,
+            seq = nextSeq(),
+        )
+    }
+
+    private fun handleProjectCreateAck(p: JsonObject) {
+        val ok = p["ok"]?.jsonPrimitive?.booleanOrNull ?: false
+        if (!ok) {
+            val err = p["error"]?.jsonPrimitive?.contentOrNull ?: "新建项目失败"
+            _projectCreation.value = ProjectCreationState(
+                creating = false,
+                error = err,
+                seq = nextSeq(),
+            )
+            return
+        }
+        val sessObj = p["session"] as? JsonObject
+        if (sessObj == null) {
+            _projectCreation.value = ProjectCreationState(creating = false, error = "未返回新项目会话信息", seq = nextSeq())
+            return
+        }
+        val created = parseSessionSummary(sessObj)
+        _sessions.update { prev ->
+            (listOf(created) + prev.filterNot { it.id == created.id && it.source == created.source })
+        }
+        saveRecentSessionsToDisk(_sessions.value)
+        _projectCreation.value = ProjectCreationState(
+            creating = false,
+            error = null,
+            lastCreatedSessionId = created.id,
+            seq = nextSeq(),
+        )
+        _actionFeedback.value = ActionFeedbackState(
+            sending = false,
+            banner = "已创建项目「${created.project}」(${created.workspacePath})",
+            isError = false,
+            seq = nextSeq(),
+        )
+        openSession(created)
+    }
+
     private fun handleSessionModelAck(p: JsonObject) {
         val ok = p["ok"]?.jsonPrimitive?.booleanOrNull ?: false
+        val sid = p["sessionId"]?.jsonPrimitive?.contentOrNull ?: ""
+        val src = p["source"]?.jsonPrimitive?.contentOrNull ?: ""
+        if (pendingModelSwitch?.sessionId == sid) {
+            pendingModelSwitch = null
+        }
         if (ok) {
             val label = p["currentModelLabel"]?.jsonPrimitive?.contentOrNull ?: "已选模型"
             val id = p["currentModelId"]?.jsonPrimitive?.contentOrNull ?: ""
-            val sid = p["sessionId"]?.jsonPrimitive?.contentOrNull ?: ""
             _activeDetail.update { cur ->
                 if (cur == null || cur.session.id != sid) cur
-                else cur.copy(
-                    session = cur.session.copy(
-                        currentModelId = id.ifBlank { cur.session.currentModelId },
-                        currentModelLabel = label
+                else {
+                    val updated = cur.copy(
+                        session = cur.session.copy(
+                            currentModelId = id.ifBlank { cur.session.currentModelId },
+                            currentModelLabel = label
+                        )
                     )
-                )
+                    detailCache.put(updated)
+                    updated
+                }
+            }
+            _sessions.update { list ->
+                list.map { item ->
+                    if (item.id == sid && (src.isBlank() || item.source == src)) {
+                        item.copy(
+                            currentModelId = id.ifBlank { item.currentModelId },
+                            currentModelLabel = label
+                        )
+                    } else item
+                }
             }
             _actionFeedback.value = ActionFeedbackState(
                 sending = false,
-                banner = "✅ 已切换任务模型为：$label",
-                isError = false
+                banner = "已切换任务模型为：$label",
+                isError = false,
+                seq = nextSeq(),
             )
         } else {
             val err = p["error"]?.jsonPrimitive?.contentOrNull ?: "未知错误"
             _actionFeedback.value = ActionFeedbackState(
                 sending = false,
                 banner = "切换模型失败：$err",
-                isError = true
+                isError = true,
+                seq = nextSeq(),
             )
+            _activeDetail.value?.session?.takeIf { it.id == sid }?.let { openSession(it) }
         }
     }
 
@@ -1000,8 +1219,21 @@ class MonitorRepository(
 
         // mode == "snapshot"
         val sessObj = p["session"] as? JsonObject ?: return
-        val parsedSession = parseSessionSummary(sessObj)
+        var parsedSession = parseSessionSummary(sessObj)
         if (cur.session.id != parsedSession.id) return
+
+        // Guard against 500ms in-flight snapshot overwriting an optimistic model switch before session.model.ack
+        val activePendingSwitch = pendingModelSwitch
+        if (
+            activePendingSwitch != null &&
+            activePendingSwitch.sessionId == parsedSession.id &&
+            System.currentTimeMillis() < activePendingSwitch.expiresAt
+        ) {
+            parsedSession = parsedSession.copy(
+                currentModelId = activePendingSwitch.modelId,
+                currentModelLabel = activePendingSwitch.modelLabel,
+            )
+        }
 
         val cdpAvail = sessObj["cdpAvailable"]?.jsonPrimitive?.booleanOrNull ?: false
         val msgs = ((p["messages"] as? JsonArray)?.mapIndexedNotNull { idx, el ->
@@ -1231,6 +1463,30 @@ class MonitorRepository(
             }
                 .filter { it.id.isNotBlank() }
                 .distinctBy { "${it.source}:${it.id}" }
+        }
+    }
+
+    private fun saveWorkspaceConfigToDisk(projectsRootDir: String, defaultDesktopDir: String) {
+        runCatching {
+            val obj = buildJsonObject {
+                put("projectsRootDir", JsonPrimitive(projectsRootDir))
+                put("defaultDesktopDir", JsonPrimitive(defaultDesktopDir))
+            }
+            File(appContext.filesDir, "workspace_config.json").writeText(obj.toString())
+        }
+    }
+
+    private fun loadWorkspaceConfigFromDisk() {
+        runCatching {
+            val f = File(appContext.filesDir, "workspace_config.json")
+            if (!f.exists()) return
+            val obj = json.parseToJsonElement(f.readText()).jsonObject
+            val rootDir = obj["projectsRootDir"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val defaultDir = obj["defaultDesktopDir"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            _workspaceConfig.value = WorkspaceConfigState(
+                projectsRootDir = rootDir,
+                defaultDesktopDir = defaultDir,
+            )
         }
     }
 }

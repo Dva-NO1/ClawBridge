@@ -14,7 +14,10 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
+import com.clawbridge.mobile.data.AppSettings
 import com.clawbridge.mobile.service.RelayForegroundService
 import com.clawbridge.mobile.ui.ClawBridgeMainApp
 import com.clawbridge.mobile.ui.ClawBridgeTheme
@@ -45,7 +48,8 @@ class MainActivity : ComponentActivity() {
         handleNotificationDeepLink(intent)
 
         setContent {
-            ClawBridgeTheme {
+            val appSettings by app.settingsStore.settingsFlow.collectAsState(initial = AppSettings())
+            ClawBridgeTheme(themeConfig = appSettings.themeConfig) {
                 ClawBridgeMainApp(
                     settingsStore = app.settingsStore,
                     socketClient = app.socketClient,

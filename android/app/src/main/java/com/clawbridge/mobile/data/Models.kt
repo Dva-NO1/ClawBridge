@@ -197,6 +197,23 @@ data class ActionFeedbackState(
     val sending: Boolean = false,
     val banner: String? = null,
     val isError: Boolean = false,
+    val seq: Long = 0L,
+)
+
+data class WorkspaceConfigState(
+    val projectsRootDir: String = "",
+    val defaultDesktopDir: String = "",
+    val saving: Boolean = false,
+    val feedbackMessage: String? = null,
+    val isError: Boolean = false,
+    val seq: Long = 0L,
+)
+
+data class ProjectCreationState(
+    val creating: Boolean = false,
+    val error: String? = null,
+    val lastCreatedSessionId: String? = null,
+    val seq: Long = 0L,
 )
 
 data class UploadStatusState(

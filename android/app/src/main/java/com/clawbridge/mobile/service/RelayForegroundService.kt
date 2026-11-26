@@ -20,6 +20,7 @@ import androidx.core.content.ContextCompat
 import com.clawbridge.mobile.ClawBridgeApp
 import com.clawbridge.mobile.MainActivity
 import com.clawbridge.mobile.R
+import com.clawbridge.mobile.net.ConnectionMode
 import com.clawbridge.mobile.net.ConnectionUiState
 import com.clawbridge.mobile.net.SocketStatus
 import kotlinx.coroutines.CoroutineScope
@@ -105,19 +106,36 @@ class RelayForegroundService : Service() {
     }
 
     private fun buildStatusNotification(state: ConnectionUiState): Notification {
-        val statusText = when {
-            state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline -> {
-                val rtt = state.latencyMs?.let { " · ${it}ms" } ?: ""
-                "桌面在线$rtt (${state.networkTypeLabel})"
+        val isLan = state.connectionMode == ConnectionMode.LAN
+        val statusText = if (isLan) {
+            when {
+                state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline -> {
+                    val rtt = state.latencyMs?.let { " · ${it}ms" } ?: ""
+                    val host = state.lanConnectedHost.ifBlank { "局域网" }
+                    "内网直连在线$rtt ($host)"
+                }
+                state.socketStatus == SocketStatus.CONNECTED && !state.paired ->
+                    "内网已发现电脑 · 等待输入 6 位内网配对码"
+                state.socketStatus == SocketStatus.CONNECTING ->
+                    "正在发现并直连局域网电脑..."
+                else ->
+                    "内网未连接 · 请确认电脑端已开启内网模式"
             }
-            state.socketStatus == SocketStatus.CONNECTED && state.paired && !state.desktopOnline ->
-                "中继已连 · 桌面桥离线"
-            state.socketStatus == SocketStatus.CONNECTED && !state.paired ->
-                "中继已连 · 等待输入配对码"
-            state.socketStatus == SocketStatus.CONNECTING ->
-                "正在连接中继..."
-            else ->
-                "连接中断，后台自动重连中..."
+        } else {
+            when {
+                state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline -> {
+                    val rtt = state.latencyMs?.let { " · ${it}ms" } ?: ""
+                    "桌面在线$rtt (${state.networkTypeLabel})"
+                }
+                state.socketStatus == SocketStatus.CONNECTED && state.paired && !state.desktopOnline ->
+                    "中继已连 · 桌面桥离线"
+                state.socketStatus == SocketStatus.CONNECTED && !state.paired ->
+                    "中继已连 · 等待输入配对码"
+                state.socketStatus == SocketStatus.CONNECTING ->
+                    "正在连接中继..."
+                else ->
+                    "连接中断，后台自动重连中..."
+            }
         }
 
         val openIntent = Intent(this, MainActivity::class.java).apply {

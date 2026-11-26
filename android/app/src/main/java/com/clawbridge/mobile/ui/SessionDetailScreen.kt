@@ -48,15 +48,18 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Inventory2
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.RocketLaunch
@@ -142,6 +145,7 @@ import com.clawbridge.mobile.data.SubagentUi
 import com.clawbridge.mobile.data.UploadStatusState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -181,6 +185,8 @@ fun SessionDetailScreen(
     onDirectFileDownload: (String, String) -> Unit,
     onClearDownloadBanner: () -> Unit,
     onOpenDownloadedUri: (String, String?) -> Unit,
+    isDarkMode: Boolean = ClawColors.isDark,
+    onToggleDarkMode: () -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
 
@@ -350,6 +356,28 @@ fun SessionDetailScreen(
         )
     }
 
+    // ─── 3-Second Auto-Dismiss for All Chat Window Transient Banners ─────────
+    LaunchedEffect(actionFeedback.banner, actionFeedback.seq) {
+        if (actionFeedback.banner != null) {
+            delay(3_000L)
+            onClearActionFeedback()
+        }
+    }
+
+    LaunchedEffect(uploadStatus.active, uploadStatus.message, uploadStatus.error) {
+        if (!uploadStatus.active && (uploadStatus.message != null || uploadStatus.error != null)) {
+            delay(3_000L)
+            onClearUploadBanner()
+        }
+    }
+
+    LaunchedEffect(downloadStatus.active, downloadStatus.savedMessage, downloadStatus.error) {
+        if (!downloadStatus.active && (downloadStatus.savedMessage != null || downloadStatus.error != null)) {
+            delay(3_000L)
+            onClearDownloadBanner()
+        }
+    }
+
     fun gateWriteWithOptionalPin(title: String, subtitle: String, forcePin: Boolean, action: () -> Unit) {
         if ((forcePin || appSettings.requirePinForSend) && settingsStore != null) {
             pendingPinGate = Triple(title, subtitle, action)
@@ -364,7 +392,7 @@ fun SessionDetailScreen(
             Column {
                 TopAppBar(
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = ClawColors.Canvas,
+                        containerColor = ClawColors.ChromeBar,
                         titleContentColor = ClawColors.TextPrimary,
                         navigationIconContentColor = ClawColors.TextPrimary,
                         actionIconContentColor = ClawColors.TextSecondary,
@@ -408,6 +436,16 @@ fun SessionDetailScreen(
                         }
                     },
                     actions = {
+                        IconButton(
+                            onClick = onToggleDarkMode,
+                            modifier = Modifier.testTag("chat_quick_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkMode) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
+                                contentDescription = if (isDarkMode) "切换至白天模式" else "切换至黑夜模式",
+                                tint = if (isDarkMode) ClawColors.Warning else ClawColors.Primary
+                            )
+                        }
                         IconButton(onClick = onRefresh) {
                             if (detail.syncing && detail.messages.isNotEmpty()) {
                                 CircularProgressIndicator(
@@ -510,13 +548,22 @@ fun SessionDetailScreen(
             if (actionFeedback.banner != null) {
                 Surface(
                     color = if (actionFeedback.isError) ClawColors.ErrorBg else ClawColors.AccentSoft,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("chat_action_banner")
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Icon(
+                            imageVector = if (actionFeedback.isError) Icons.Rounded.WarningAmber else Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = if (actionFeedback.isError) ClawColors.Error else ClawColors.Accent,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
                         Text(
                             text = actionFeedback.banner,
                             style = MaterialTheme.typography.bodySmall,
@@ -1103,7 +1150,7 @@ private fun ChatComposerBottomBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(ClawColors.Surface)
+            .background(ClawColors.ChromeBar)
             .navigationBarsPadding()
             .imePadding()
     ) {
@@ -1324,7 +1371,9 @@ private fun UploadBanner(
 ) {
     Surface(
         color = if (status.error != null) ClawColors.ErrorBg else ClawColors.AccentSoft,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("chat_upload_banner")
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(
@@ -1371,7 +1420,9 @@ private fun DownloadBanner(
     val isApk = status.fileName.endsWith(".apk", ignoreCase = true)
     Surface(
         color = if (status.error != null) ClawColors.ErrorBg else ClawColors.SurfaceElevated,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("chat_download_banner")
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(
@@ -1514,11 +1565,29 @@ private fun MessageStreamList(
 ) {
     if (messages.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = "该会话暂无消息记录",
-                style = MaterialTheme.typography.bodyMedium,
-                color = ClawColors.TextMuted
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(horizontal = 32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.RocketLaunch,
+                    contentDescription = null,
+                    tint = ClawColors.Accent,
+                    modifier = Modifier.size(28.dp)
+                )
+                Text(
+                    text = "项目工作区已就绪",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = ClawColors.TextPrimary
+                )
+                Text(
+                    text = "在下方发送第一条开发指令，即可在电脑对应项目目录开始执行",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ClawColors.TextMuted,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
         }
         return
     }
@@ -1567,12 +1636,12 @@ private fun UserMessageBubble(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.End
     ) {
-        // ChatGPT-style calm charcoal rounded user bubble
+        // Youthful cobalt-tinted rounded user bubble
         Surface(
-            color = ClawColors.SurfaceElevated,
-            contentColor = ClawColors.TextPrimary,
+            color = ClawColors.UserBubbleBg,
+            contentColor = ClawColors.UserBubbleText,
             shape = RoundedCornerShape(18.dp, 6.dp, 18.dp, 18.dp),
-            border = ClawDimens.HairlineBorder,
+            border = BorderStroke(1.dp, ClawColors.UserBubbleBorder),
             modifier = Modifier
                 .widthIn(max = 310.dp)
                 .clip(RoundedCornerShape(18.dp, 6.dp, 18.dp, 18.dp))
@@ -1584,7 +1653,7 @@ private fun UserMessageBubble(
             Text(
                 text = displayClean,
                 style = MaterialTheme.typography.bodyLarge,
-                color = ClawColors.TextPrimary,
+                color = ClawColors.UserBubbleText,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
             )
         }
@@ -2363,7 +2432,8 @@ private fun ZoomableImageView(bytes: ByteArray) {
 
 @Composable
 private fun DiffCodeView(diffText: String) {
-    val annotated = remember(diffText) {
+    val palette = LocalClawPalette.current
+    val annotated = remember(diffText, palette) {
         buildAnnotatedString {
             val lines = diffText.split("\n")
             lines.forEachIndexed { i, line ->
@@ -2478,16 +2548,28 @@ private fun ModelPickerDialog(
 ) {
     var familyFilter by remember { mutableStateOf("ALL") }
 
+    LaunchedEffect(availableModels.isEmpty(), desktopOnline) {
+        if (availableModels.isEmpty() && desktopOnline) {
+            onRefreshModels()
+        }
+    }
+
     val categories = remember(source) {
         if (source == "codex") {
-            listOf("ALL" to "全部")
+            listOf(
+                "ALL" to "全部",
+                "SOL" to "GPT-6 Sol",
+                "ASTRA" to "GPT-6 Astra",
+                "GPT5" to "GPT-5 系列"
+            )
         } else {
             listOf(
                 "ALL" to "全部",
                 "CARBON" to "4 Carbon",
-                "ARGON" to "4 Argon",
                 "NEON" to "4 Neon",
+                "ARGON" to "4 Argon",
                 "HYDROGEN" to "4 Hydrogen",
+                "FLASH" to "3.x / Flash",
                 "CLAUDE" to "Claude / GPT"
             )
         }
@@ -2495,14 +2577,21 @@ private fun ModelPickerDialog(
 
     val filtered = remember(availableModels, familyFilter) {
         when (familyFilter) {
+            "SOL" -> availableModels.filter { it.label.contains("Sol", ignoreCase = true) || it.modelId.contains("sol", ignoreCase = true) }
+            "ASTRA" -> availableModels.filter { it.label.contains("Astra", ignoreCase = true) || it.modelId.contains("astra", ignoreCase = true) }
+            "GPT5" -> availableModels.filter { it.label.contains("GPT-5", ignoreCase = true) || it.modelId.contains("gpt-5", ignoreCase = true) }
             "CARBON" -> availableModels.filter { it.label.contains("Carbon", ignoreCase = true) }
             "ARGON" -> availableModels.filter { it.label.contains("Argon", ignoreCase = true) }
             "NEON" -> availableModels.filter { it.label.contains("Neon", ignoreCase = true) }
             "HYDROGEN" -> availableModels.filter { it.label.contains("Hydrogen", ignoreCase = true) }
+            "FLASH" -> availableModels.filter {
+                it.label.contains("Flash", ignoreCase = true) ||
+                    it.label.contains("Gemini 3", ignoreCase = true) ||
+                    it.label.contains("Gemini 2", ignoreCase = true)
+            }
             "CLAUDE" -> availableModels.filter {
                 it.label.contains("Claude", ignoreCase = true) ||
-                    it.label.contains("GPT", ignoreCase = true) ||
-                    it.label.contains("Flash", ignoreCase = true)
+                    it.label.contains("GPT", ignoreCase = true)
             }
             else -> availableModels
         }
@@ -2603,7 +2692,8 @@ private fun ModelPickerDialog(
                     ) {
                         itemsIndexed(filtered, key = { idx, item -> "${item.modelId}-$idx" }) { _, item ->
                             val isSelected = item.modelId == currentModelId ||
-                                (currentModelId.isBlank() && item.label.equals(currentModelLabel, ignoreCase = true))
+                                item.label.equals(currentModelLabel, ignoreCase = true) ||
+                                (currentModelId.isNotBlank() && !currentModelId.contains('#') && item.modelId == "$currentModelId#high")
 
                             Card(
                                 shape = ClawDimens.NestedShape,

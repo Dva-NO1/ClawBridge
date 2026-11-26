@@ -9,6 +9,11 @@
   "targetAntigravityVersion": "2.34.0",
   "quotaRefreshIntervalSec": 300,
   "metricsEnabled": true,
+  "lanEnabled": false,
+  "lanPort": 18791,
+  "lanToken": "",
+  "lastConnectionMode": "wan",
+  "projectsRootDir": "",
   "assistantSessionId": "",
   "personaPath": "./persona.md",
   "schedules": {

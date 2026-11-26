@@ -37,12 +37,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Chat
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PushPin
@@ -97,6 +102,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
@@ -107,15 +113,22 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.clawbridge.mobile.data.AppSettings
 import com.clawbridge.mobile.data.CodexOpenAiQuotaUi
+import com.clawbridge.mobile.data.LanPairingSnapshot
+import com.clawbridge.mobile.data.ModelOptionUi
 import com.clawbridge.mobile.data.MonitorRepository
 import com.clawbridge.mobile.data.PendingApprovalUi
+import com.clawbridge.mobile.data.ProjectCreationState
 import com.clawbridge.mobile.data.QuotaBucketUi
 import com.clawbridge.mobile.data.QuotaDashboardState
 import com.clawbridge.mobile.data.QuotaGroupCardUi
 import com.clawbridge.mobile.data.SessionSummaryUi
 import com.clawbridge.mobile.data.SettingsStore
+import com.clawbridge.mobile.data.WorkspaceConfigState
+import com.clawbridge.mobile.net.ConnectionMode
 import com.clawbridge.mobile.net.ConnectionUiState
 import com.clawbridge.mobile.net.RelaySocketClient
 import com.clawbridge.mobile.net.SocketStatus
@@ -148,11 +161,21 @@ fun ClawBridgeMainApp(
     val pendingApprovals by monitorRepository.pendingApprovals.collectAsState()
     val actionFeedback by monitorRepository.actionFeedback.collectAsState()
     val deepLinkPrompt by monitorRepository.deepLinkApprovalPrompt.collectAsState()
+    val workspaceConfig by monitorRepository.workspaceConfig.collectAsState()
+    val projectCreation by monitorRepository.projectCreation.collectAsState()
+    val antigravityModels by monitorRepository.antigravityModels.collectAsState()
+    val codexModels by monitorRepository.codexModels.collectAsState()
 
     var currentTab by rememberSaveable { mutableIntStateOf(0) }
     var globalPinGate by remember { mutableStateOf<Triple<String, String, () -> Unit>?>(null) }
     val scope = rememberCoroutineScope()
     val desktopOnline = connState.paired && connState.desktopOnline
+
+    LaunchedEffect(workspaceConfig.projectsRootDir) {
+        if (workspaceConfig.projectsRootDir.isNotBlank() && workspaceConfig.projectsRootDir != appSettings.projectsRootDir) {
+            settingsStore.saveCachedProjectsRootDir(workspaceConfig.projectsRootDir)
+        }
+    }
 
     // Handle notification action deep-links ("进App输PIN批准" / "拒绝(进App)")
     LaunchedEffect(deepLinkPrompt) {
@@ -233,7 +256,9 @@ fun ClawBridgeMainApp(
                 monitorRepository.requestDirectFileDownload(detail.session.id, filePath, displayName)
             },
             onClearDownloadBanner = { monitorRepository.clearDownloadBanner() },
-            onOpenDownloadedUri = onOpenDownloadedUri
+            onOpenDownloadedUri = onOpenDownloadedUri,
+            isDarkMode = appSettings.themeConfig.isDarkMode,
+            onToggleDarkMode = { scope.launch { settingsStore.toggleDarkMode() } },
         )
         return
     }
@@ -241,6 +266,7 @@ fun ClawBridgeMainApp(
     val pendingApprovalCount = remember(sessions, pendingApprovals) {
         maxOf(pendingApprovals.size, sessions.count { it.status == "waiting_approval" })
     }
+    val lanSnapshot = remember(connState) { socketClient.getLanPairingSnapshot() }
 
     ClawBridgeRootShell(
         currentTab = currentTab,
@@ -248,10 +274,13 @@ fun ClawBridgeMainApp(
         connState = connState,
         tierCode = quotaState.tierCode,
         sessionCount = sessions.size,
+        isDarkMode = appSettings.themeConfig.isDarkMode,
+        onToggleDarkMode = { scope.launch { settingsStore.toggleDarkMode() } },
+        onSwitchMode = { mode -> socketClient.switchMode(mode) },
         onTopRefresh = {
-            if (connState.socketStatus == SocketStatus.CONNECTED) {
+            if (connState.socketStatus == SocketStatus.CONNECTED && connState.paired) {
                 socketClient.sendPingNow()
-                if (connState.paired && connState.desktopOnline) {
+                if (connState.desktopOnline) {
                     monitorRepository.refreshQuota(force = true)
                     monitorRepository.refreshSessions()
                 }
@@ -293,13 +322,15 @@ fun ClawBridgeMainApp(
                 },
                 onPairSubmit = { socketClient.submitPairingCode(it) },
                 onPingOrReconnect = {
-                    if (connState.socketStatus == SocketStatus.CONNECTED) {
+                    if (connState.socketStatus == SocketStatus.CONNECTED && connState.paired) {
                         socketClient.sendPingNow()
                         monitorRepository.refreshQuota(force = true)
                     } else {
                         socketClient.reconnectNow()
                     }
                 },
+                onSwitchMode = { mode -> socketClient.switchMode(mode) },
+                onManualLanConnect = { host -> socketClient.connectLanManualHost(host) },
                 onOpenSessions = { currentTab = 1 },
                 onOpenSettings = { currentTab = 2 }
             )
@@ -310,17 +341,67 @@ fun ClawBridgeMainApp(
                 pinnedIds = appSettings.pinnedSessionIds,
                 onRefresh = { monitorRepository.refreshSessions() },
                 onTogglePin = { sid -> scope.launch { settingsStore.togglePinSession(sid) } },
-                onOpenSession = { summary -> monitorRepository.openSession(summary) }
+                onOpenSession = { summary -> monitorRepository.openSession(summary) },
+                workspaceConfig = workspaceConfig,
+                projectCreation = projectCreation,
+                defaultProjectsRootHint = appSettings.projectsRootDir,
+                antigravityModels = antigravityModels,
+                codexModels = codexModels,
+                onCreateProject = { name, src, modelId, modelLabel, prompt ->
+                    monitorRepository.createNewProject(name, src, modelId, modelLabel, prompt)
+                },
+                onClearProjectError = { monitorRepository.clearProjectCreationError() },
+                onRefreshModels = { monitorRepository.refreshModels(force = true) },
+                onOpenSettings = { currentTab = 2 },
+                onSwitchMode = { mode -> socketClient.switchMode(mode) },
+                onPairSubmit = { code -> socketClient.submitPairingCode(code) },
+                onManualLanConnect = { host -> socketClient.connectLanManualHost(host) },
+                onRetryDiscover = { socketClient.reconnectNow() },
             )
 
             2 -> SettingsScreenContent(
                 appSettings = appSettings,
                 connState = connState,
                 isWhitelisted = isIgnoringBatteryOptimizations(),
+                workspaceConfig = workspaceConfig,
+                lanSnapshot = lanSnapshot,
+                onConnectManualLanHost = { host ->
+                    socketClient.connectLanManualHost(host)
+                    currentTab = 0
+                },
+                onUnpairLan = {
+                    socketClient.unpairLanOnly()
+                },
+                onSaveProjectsRootDir = { newDir ->
+                    scope.launch { settingsStore.saveCachedProjectsRootDir(newDir) }
+                    monitorRepository.updateProjectsRootDir(newDir, resetDefault = false)
+                },
+                onResetProjectsRootDir = {
+                    monitorRepository.updateProjectsRootDir("", resetDefault = true)
+                },
+                onClearWorkspaceFeedback = { monitorRepository.clearWorkspaceConfigFeedback() },
+                onSetDarkMode = { isDark ->
+                    scope.launch { settingsStore.setDarkMode(isDark) }
+                },
+                onUpdateSectionColor = { section, argb ->
+                    scope.launch {
+                        settingsStore.updateSectionColor(appSettings.themeConfig.isDarkMode, section, argb)
+                    }
+                },
+                onApplyThemePreset = { presetOverrides ->
+                    scope.launch {
+                        settingsStore.applyThemePreset(appSettings.themeConfig.isDarkMode, presetOverrides)
+                    }
+                },
+                onResetThemeColors = {
+                    scope.launch {
+                        settingsStore.resetCurrentModeColors(appSettings.themeConfig.isDarkMode)
+                    }
+                },
                 onSaveRelayConfig = { url, trustSelfSigned ->
                     socketClient.applyNewRelayConfig(url, trustSelfSigned)
                 },
-                onUnpairAndReset = { socketClient.unpairAndReset() },
+                onUnpairAndReset = { socketClient.unpairWanOnly() },
                 onSavePin = { pin -> scope.launch { settingsStore.setPin(pin) } },
                 onUpdatePrefs = { reqPin, notifyOn, dndOn, dndStart, dndEnd ->
                     scope.launch {
@@ -331,6 +412,11 @@ fun ClawBridgeMainApp(
                             dndStart = dndStart,
                             dndEnd = dndEnd
                         )
+                    }
+                },
+                onUpdateTaskDoneNotify = { enabled ->
+                    scope.launch {
+                        settingsStore.updatePreferences(taskDoneNotifyEnabled = enabled)
                     }
                 },
                 onRequestBatteryWhitelist = onRequestBatteryWhitelist,
@@ -350,6 +436,9 @@ internal fun ClawBridgeRootShell(
     tierCode: String,
     sessionCount: Int,
     onTopRefresh: () -> Unit,
+    isDarkMode: Boolean = ClawColors.isDark,
+    onToggleDarkMode: () -> Unit = {},
+    onSwitchMode: (ConnectionMode) -> Unit = {},
     content: @Composable () -> Unit,
 ) {
     Scaffold(
@@ -358,7 +447,7 @@ internal fun ClawBridgeRootShell(
             Column {
                 TopAppBar(
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = ClawColors.Canvas,
+                        containerColor = ClawColors.ChromeBar,
                         titleContentColor = ClawColors.TextPrimary,
                         actionIconContentColor = ClawColors.TextSecondary,
                     ),
@@ -374,40 +463,56 @@ internal fun ClawBridgeRootShell(
                             if (tierCode.isNotBlank()) {
                                 Spacer(Modifier.width(8.dp))
                                 Surface(
-                                    color = ClawColors.SurfaceElevated,
-                                    contentColor = ClawColors.TextSecondary,
+                                    color = ClawColors.PrimarySoft,
+                                    contentColor = ClawColors.SecondaryAccent,
                                     shape = ClawDimens.BadgeShape,
-                                    border = ClawDimens.HairlineBorder
+                                    border = BorderStroke(1.dp, ClawColors.PrimaryBorder)
                                 ) {
                                     Text(
                                         text = tierCode,
                                         style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                                     )
                                 }
                             }
                         }
                     },
                     actions = {
+                        IconButton(
+                            onClick = onToggleDarkMode,
+                            modifier = Modifier.testTag("btn_quick_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkMode) Icons.Rounded.LightMode else Icons.Rounded.DarkMode,
+                                contentDescription = if (isDarkMode) "切换至白天模式" else "切换至黑夜模式",
+                                tint = if (isDarkMode) ClawColors.Warning else ClawColors.Primary
+                            )
+                        }
                         IconButton(onClick = onTopRefresh) {
                             Icon(Icons.Rounded.Refresh, contentDescription = "刷新数据")
                         }
                     }
                 )
                 HorizontalDivider(color = ClawColors.Border, thickness = 1.dp)
+                if (currentTab == 0 || currentTab == 1) {
+                    DualModeTopSwitchBar(
+                        connState = connState,
+                        onSwitchMode = onSwitchMode
+                    )
+                }
             }
         },
         bottomBar = {
             Column {
                 HorizontalDivider(color = ClawColors.Border, thickness = 1.dp)
                 NavigationBar(
-                    containerColor = ClawColors.Surface,
+                    containerColor = ClawColors.ChromeBar,
                     tonalElevation = 0.dp
                 ) {
                     val navColors = NavigationBarItemDefaults.colors(
-                        selectedIconColor = ClawColors.TextPrimary,
+                        selectedIconColor = ClawColors.Accent,
                         selectedTextColor = ClawColors.TextPrimary,
-                        indicatorColor = ClawColors.SurfaceElevated,
+                        indicatorColor = ClawColors.PrimarySoft,
                         unselectedIconColor = ClawColors.TextMuted,
                         unselectedTextColor = ClawColors.TextMuted,
                     )
@@ -501,9 +606,12 @@ internal fun HomeScreen(
     onPingOrReconnect: () -> Unit,
     onOpenSessions: () -> Unit,
     onOpenSettings: () -> Unit,
+    onSwitchMode: (ConnectionMode) -> Unit = {},
+    onManualLanConnect: (String) -> Unit = {},
 ) {
     var pairCodeInput by rememberSaveable { mutableStateOf("") }
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val isLanMode = connState.connectionMode == ConnectionMode.LAN
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -519,7 +627,17 @@ internal fun HomeScreen(
             .padding(horizontal = ClawDimens.ScreenPadding, vertical = ClawDimens.SpaceLg),
         verticalArrangement = Arrangement.spacedBy(ClawDimens.SectionGap)
     ) {
-        // 1. 连接状态与中继信息主卡（中继地址独立换行完整显示，绝不截断）
+        // 0. 内网模式下发现失败 / 电脑端未开启内网模式提示卡 + 一键切回外网 (P4.2 & P4.5)
+        if (isLanMode && connState.socketStatus == SocketStatus.ERROR) {
+            LanMismatchAndDiscoveryCard(
+                connState = connState,
+                onRetryDiscover = onPingOrReconnect,
+                onManualConnect = onManualLanConnect,
+                onSwitchToWan = { onSwitchMode(ConnectionMode.WAN) }
+            )
+        }
+
+        // 1. 连接状态与通道信息主卡
         ConnectionHeroCard(
             state = connState,
             planName = quotaState.planName,
@@ -527,77 +645,85 @@ internal fun HomeScreen(
             onOpenSettings = onOpenSettings
         )
 
-        // 2. 若未配对，展示 6 位配对码输入卡片
+        // 2. 若未配对，展示对应模式的 6 位配对码输入卡片
         if (!connState.paired) {
-            Card(
-                shape = ClawDimens.CardShape,
-                colors = CardDefaults.cardColors(containerColor = ClawColors.Surface),
-                border = ClawDimens.StrongBorder,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(ClawDimens.CardPadding),
-                    verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
+            if (isLanMode && connState.socketStatus != SocketStatus.ERROR) {
+                LanPairingGuideCard(
+                    connState = connState,
+                    onSubmitLanPairCode = onPairSubmit,
+                    onManualConnect = onManualLanConnect
+                )
+            } else if (!isLanMode) {
+                Card(
+                    shape = ClawDimens.CardShape,
+                    colors = CardDefaults.cardColors(containerColor = ClawColors.Surface),
+                    border = ClawDimens.StrongBorder,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Rounded.Link,
-                            contentDescription = null,
-                            tint = ClawColors.Accent,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "配对绑定桌面桥",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = ClawColors.TextPrimary
-                        )
-                    }
-                    Text(
-                        text = "请输入渲染本 ClawBridge 生成的 6 位一次性配对码（10 分钟内有效）：",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ClawColors.TextSecondary
-                    )
-                    OutlinedTextField(
-                        value = pairCodeInput,
-                        onValueChange = { next ->
-                            pairCodeInput = next.filter { it.isDigit() }.take(6)
-                        },
-                        label = { Text("6 位配对码") },
-                        placeholder = { Text("例如 479494") },
-                        singleLine = true,
-                        shape = ClawDimens.NestedShape,
-                        colors = clawTextFieldColors(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (!connState.pairingError.isNullOrBlank()) {
-                        Text(
-                            text = connState.pairingError,
-                            color = ClawColors.Error,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    Button(
-                        onClick = { onPairSubmit(pairCodeInput) },
-                        enabled = pairCodeInput.length == 6 && !connState.pairingBusy,
-                        shape = ClawDimens.NestedShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = ClawColors.Primary,
-                            contentColor = ClawColors.OnPrimary
-                        ),
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        modifier = Modifier.padding(ClawDimens.CardPadding),
+                        verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
                     ) {
-                        if (connState.pairingBusy) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = ClawColors.OnPrimary
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Link,
+                                contentDescription = null,
+                                tint = ClawColors.Accent,
+                                modifier = Modifier.size(20.dp)
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text("正在验证配对...", style = MaterialTheme.typography.labelMedium)
-                        } else {
-                            Text("立即配对", style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                text = "配对绑定桌面桥",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = ClawColors.TextPrimary
+                            )
+                        }
+                        Text(
+                            text = "请输入渲染本 ClawBridge 生成的 6 位一次性配对码（10 分钟内有效）：",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ClawColors.TextSecondary
+                        )
+                        OutlinedTextField(
+                            value = pairCodeInput,
+                            onValueChange = { next ->
+                                pairCodeInput = next.filter { it.isDigit() }.take(6)
+                            },
+                            label = { Text("6 位配对码") },
+                            placeholder = { Text("例如 479494") },
+                            singleLine = true,
+                            shape = ClawDimens.NestedShape,
+                            colors = clawTextFieldColors(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (!connState.pairingError.isNullOrBlank()) {
+                            Text(
+                                text = connState.pairingError,
+                                color = ClawColors.Error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Button(
+                            onClick = { onPairSubmit(pairCodeInput) },
+                            enabled = pairCodeInput.length == 6 && !connState.pairingBusy,
+                            shape = ClawDimens.NestedShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ClawColors.Primary,
+                                contentColor = ClawColors.OnPrimary
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (connState.pairingBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = ClawColors.OnPrimary
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("正在验证配对...", style = MaterialTheme.typography.labelMedium)
+                            } else {
+                                Text("立即配对", style = MaterialTheme.typography.labelMedium)
+                            }
                         }
                     }
                 }
@@ -797,32 +923,70 @@ private fun ConnectionHeroCard(
     onPingOrReconnect: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    val isPlaceholderRelay = state.relayUrl.contains("example.com", ignoreCase = true)
-    val (headline, subtitle, badgeColor) = when {
-        isPlaceholderRelay ->
-            Triple("请先配置中继地址", "首次使用请点击下方「中继设置」，填写你自建的 VPS 中继地址", ClawColors.Info)
-        state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline ->
-            Triple("已直连 · 桌面在线", "套餐：$planName · 实时监控就绪", ClawColors.Success)
-        state.socketStatus == SocketStatus.CONNECTED && state.paired && !state.desktopOnline ->
-            Triple("桌面离线", "已连接中继服务器，等待渲染本上线", ClawColors.Warning)
-        state.socketStatus == SocketStatus.CONNECTED && !state.paired ->
-            Triple("中继已连通 · 待配对", "请在下方输入渲染本 6 位配对码", ClawColors.Info)
-        state.socketStatus == SocketStatus.CONNECTING ->
-            Triple("正在连接中继...", "正在建立安全 WSS 通道", ClawColors.Warning)
-        else ->
-            Triple("中继未连接", state.lastError ?: "断线指数退避重连中...", ClawColors.Error)
+    val isLan = state.connectionMode == ConnectionMode.LAN
+    val (headline, subtitle, badgeColor) = if (isLan) {
+        when {
+            state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline ->
+                Triple(
+                    "内网已直连 · 桌面在线",
+                    "电脑：${state.lanPairedDeviceName.ifBlank { state.lanConnectedHost }} · 套餐：$planName",
+                    ClawColors.Success
+                )
+            state.socketStatus == SocketStatus.CONNECTED && !state.paired ->
+                Triple(
+                    "已发现电脑 · 待内网配对",
+                    "电脑：${state.lanDiscoveredDeviceName.ifBlank { state.lanConnectedHost }} · 请在下方输入 6 位内网配对码",
+                    ClawColors.Info
+                )
+            state.socketStatus == SocketStatus.CONNECTING ->
+                Triple(
+                    "正在扫描局域网电脑...",
+                    state.modeSwitchingHint ?: "正在广播发现并直连电脑 (UDP 18792)",
+                    ClawColors.Warning
+                )
+            else ->
+                Triple(
+                    "内网直连未连接",
+                    state.lastError ?: "电脑端未开启内网模式或不在同一 WiFi",
+                    ClawColors.Error
+                )
+        }
+    } else {
+        when {
+            state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline ->
+                Triple("已直连 · 桌面在线", "套餐：$planName · 实时监控就绪", ClawColors.Success)
+            state.socketStatus == SocketStatus.CONNECTED && state.paired && !state.desktopOnline ->
+                Triple("桌面离线", "已连接中继服务器，等待渲染本上线", ClawColors.Warning)
+            state.socketStatus == SocketStatus.CONNECTED && !state.paired ->
+                Triple("中继已连通 · 待配对", "请在下方输入渲染本 6 位配对码", ClawColors.Info)
+            state.socketStatus == SocketStatus.CONNECTING ->
+                Triple("正在连接中继...", "正在建立安全 WSS 通道", ClawColors.Warning)
+            else ->
+                Triple("中继未连接", state.lastError ?: "断线指数退避重连中...", ClawColors.Error)
+        }
     }
 
+    val isOnlineHealthy = state.socketStatus == SocketStatus.CONNECTED && state.paired && state.desktopOnline
     Card(
         shape = ClawDimens.CardShape,
         colors = CardDefaults.cardColors(containerColor = ClawColors.Surface),
-        border = ClawDimens.HairlineBorder,
+        border = BorderStroke(1.dp, if (isOnlineHealthy) ClawColors.PrimaryBorder else ClawColors.Border),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(
-            modifier = Modifier.padding(ClawDimens.CardPadding),
-            verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
-        ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(
+                        if (isOnlineHealthy) ClawColors.PrimaryGradientBrush
+                        else Brush.horizontalGradient(listOf(badgeColor, badgeColor.copy(alpha = 0.5f)))
+                    )
+            )
+            Column(
+                modifier = Modifier.padding(ClawDimens.CardPadding),
+                verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
+            ) {
             // Top Status + Latency Pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -871,16 +1035,24 @@ private fun ConnectionHeroCard(
 
             HorizontalDivider(color = ClawColors.Border, thickness = 1.dp)
 
-            // Full-width Relay URL row — NEVER truncated with ellipsis!
+            // Full-width Address row — NEVER truncated with ellipsis!
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
-                        text = "中继服务器地址",
+                        text = if (isLan) "电脑局域网直连地址" else "中继服务器地址",
                         style = MaterialTheme.typography.labelSmall,
                         color = ClawColors.TextMuted
                     )
                     Text(
-                        text = state.relayUrl,
+                        text = if (isLan) {
+                            val fallbackText = if (state.socketStatus == SocketStatus.CONNECTING) "自动发现中..." else "未发现局域网主机"
+                            val endpoint = state.lanConnectedHost.ifBlank {
+                                state.lanKnownIp.takeIf { it.isNotBlank() }?.let { "$it:18791" } ?: fallbackText
+                            }
+                            if (endpoint.startsWith("ws://") || endpoint == fallbackText) endpoint else "ws://$endpoint"
+                        } else {
+                            state.relayUrl
+                        },
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
                         color = ClawColors.TextPrimary
@@ -918,7 +1090,7 @@ private fun ConnectionHeroCard(
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = "中继设置",
+                        text = if (isLan) "连接设置" else "中继设置",
                         style = MaterialTheme.typography.labelMedium,
                         color = ClawColors.TextPrimary
                     )
@@ -927,17 +1099,23 @@ private fun ConnectionHeroCard(
                     onClick = onPingOrReconnect,
                     shape = ClawDimens.NestedShape,
                     colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = ClawColors.SurfaceElevated,
+                        containerColor = ClawColors.PrimarySoft,
                         contentColor = ClawColors.TextPrimary
                     ),
+                    border = BorderStroke(1.dp, ClawColors.PrimaryBorder),
                     contentPadding = PaddingValues(vertical = 10.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Text(
-                        text = if (state.socketStatus == SocketStatus.CONNECTED) "刷新状态" else "立即重连",
+                        text = when {
+                            state.socketStatus == SocketStatus.CONNECTED && state.paired -> "刷新状态"
+                            isLan -> "重新扫描"
+                            else -> "立即重连"
+                        },
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
+            }
             }
         }
     }
@@ -1057,10 +1235,11 @@ private fun QuotaBarRow(
     // Remaining-quota fuel-gauge bar: 98% remaining -> 98% full green bar!
     val remainingPct = bucket.remainingPercent.coerceIn(0, 100)
     val remainingFrac = (remainingPct / 100f).coerceIn(0f, 1f)
+    val isHealthy = remainingPct > 35
     val barColor = when {
         remainingPct <= 15 -> ClawColors.Error
         remainingPct <= 35 -> ClawColors.Warning
-        else -> Color(0xFF34C77B)
+        else -> ClawColors.Accent
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1095,13 +1274,13 @@ private fun QuotaBarRow(
             }
         }
 
-        // Remaining-quota green progress bar (battery / fuel-gauge style)
+        // Remaining-quota luminous Aurora mint-emerald bar
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(9.dp)
                 .clip(CircleShape)
-                .background(Color(0xFF2B2B2B))
+                .background(ClawColors.QuotaTrack)
         ) {
             if (remainingFrac > 0f) {
                 Box(
@@ -1109,7 +1288,10 @@ private fun QuotaBarRow(
                         .fillMaxWidth(remainingFrac)
                         .height(9.dp)
                         .clip(CircleShape)
-                        .background(barColor)
+                        .let { mod ->
+                            if (isHealthy) mod.background(ClawColors.HealthyQuotaBrush)
+                            else mod.background(barColor)
+                        }
                 )
             }
         }
@@ -1168,6 +1350,20 @@ internal fun SessionsScreen(
     initialViewMode: SessionViewMode = SessionViewMode.TIME,
     initialSearchQuery: String = "",
     initialStatusFilter: SessionStatusFilter = SessionStatusFilter.ALL,
+    workspaceConfig: WorkspaceConfigState = WorkspaceConfigState(),
+    projectCreation: ProjectCreationState = ProjectCreationState(),
+    defaultProjectsRootHint: String = "",
+    antigravityModels: List<ModelOptionUi> = emptyList(),
+    codexModels: List<ModelOptionUi> = emptyList(),
+    onCreateProject: (String, String, String, String, String) -> Unit = { _, _, _, _, _ -> },
+    onClearProjectError: () -> Unit = {},
+    onRefreshModels: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
+    initialShowCreateDialog: Boolean = false,
+    onSwitchMode: (ConnectionMode) -> Unit = {},
+    onPairSubmit: (String) -> Unit = {},
+    onManualLanConnect: (String) -> Unit = {},
+    onRetryDiscover: () -> Unit = {},
 ) {
     var searchQuery by rememberSaveable { mutableStateOf(initialSearchQuery) }
     var sourceFilter by rememberSaveable { mutableStateOf("all") }
@@ -1175,6 +1371,40 @@ internal fun SessionsScreen(
     var viewModeName by rememberSaveable { mutableStateOf(initialViewMode.name) }
     var expandedProjects by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var actionTarget by remember { mutableStateOf<SessionDisplayModel?>(null) }
+    var showCreateDialog by rememberSaveable { mutableStateOf(initialShowCreateDialog) }
+
+    val effectiveProjectsRoot = workspaceConfig.projectsRootDir
+        .ifBlank { defaultProjectsRootHint }
+        .ifBlank { workspaceConfig.defaultDesktopDir }
+        .ifBlank { "C:\\Users\\<用户>\\Desktop (C盘桌面)" }
+
+    LaunchedEffect(projectCreation.lastCreatedSessionId, projectCreation.creating) {
+        if (!projectCreation.creating && projectCreation.error == null && !projectCreation.lastCreatedSessionId.isNullOrBlank()) {
+            showCreateDialog = false
+        }
+    }
+
+    if (showCreateDialog) {
+        CreateProjectDialog(
+            desktopOnline = connState.paired && connState.desktopOnline,
+            effectiveProjectsRoot = effectiveProjectsRoot,
+            projectCreation = projectCreation,
+            antigravityModels = antigravityModels,
+            codexModels = codexModels,
+            onRefreshModels = onRefreshModels,
+            onOpenSettings = {
+                showCreateDialog = false
+                onOpenSettings()
+            },
+            onConfirmCreate = { name, src, modelId, modelLabel, prompt ->
+                onCreateProject(name, src, modelId, modelLabel, prompt)
+            },
+            onDismiss = {
+                onClearProjectError()
+                showCreateDialog = false
+            }
+        )
+    }
 
     val statusFilter = remember(statusFilterName) {
         runCatching { SessionStatusFilter.valueOf(statusFilterName) }.getOrDefault(SessionStatusFilter.ALL)
@@ -1296,20 +1526,120 @@ internal fun SessionsScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (!connState.desktopOnline) {
+        val isLanMode = connState.connectionMode == ConnectionMode.LAN
+        if (isLanMode && connState.socketStatus == SocketStatus.ERROR) {
+            Box(modifier = Modifier.padding(horizontal = ClawDimens.ScreenPadding, vertical = 8.dp)) {
+                LanMismatchAndDiscoveryCard(
+                    connState = connState,
+                    onRetryDiscover = onRetryDiscover,
+                    onManualConnect = onManualLanConnect,
+                    onSwitchToWan = { onSwitchMode(ConnectionMode.WAN) }
+                )
+            }
+        } else if (isLanMode && !connState.paired) {
+            Box(modifier = Modifier.padding(horizontal = ClawDimens.ScreenPadding, vertical = 8.dp)) {
+                LanPairingGuideCard(
+                    connState = connState,
+                    onSubmitLanPairCode = onPairSubmit,
+                    onManualConnect = onManualLanConnect
+                )
+            }
+        } else if (!connState.desktopOnline) {
             Surface(
                 color = ClawColors.WarningBg,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = if (!connState.paired) "尚未配对桌面桥，请先在首页输入 6 位配对码。"
-                    else "桌面桥当前离线：以下为最近同步缓存列表，写操作已锁定。",
+                    text = when {
+                        isLanMode && connState.socketStatus == SocketStatus.CONNECTING ->
+                            connState.modeSwitchingHint ?: "正在扫描并连接局域网电脑..."
+                        !connState.paired ->
+                            "尚未配对桌面桥，请先在首页输入 6 位配对码。"
+                        else ->
+                            "桌面桥当前离线：以下为最近同步缓存列表，写操作已锁定。"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = ClawColors.Warning,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
             HorizontalDivider(color = ClawColors.WarningBorder)
+        }
+
+        // Row 0: Youthful New-Project Quick Strip + Active Workspace Root Hint
+        val shortRootDisplay = remember(effectiveProjectsRoot) {
+            val clean = effectiveProjectsRoot.trimEnd('\\', '/')
+            if (clean.contains("Desktop", ignoreCase = true) && clean.contains("Users", ignoreCase = true)) {
+                "C盘桌面 (${clean.substringAfterLast('\\').substringAfterLast('/')})"
+            } else {
+                clean.substringAfterLast('\\').substringAfterLast('/').ifBlank { clean }
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = ClawDimens.ScreenPadding, end = ClawDimens.ScreenPadding, top = 8.dp, bottom = 2.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onOpenSettings() }
+                    .padding(vertical = 4.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.FolderOpen,
+                    contentDescription = null,
+                    tint = ClawColors.Accent,
+                    modifier = Modifier.size(15.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "工作区：$shortRootDisplay",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ClawColors.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (connState.paired && connState.desktopOnline) ClawColors.PrimaryGradientBrush
+                        else Brush.horizontalGradient(listOf(ClawColors.SurfaceElevated, ClawColors.SurfaceElevated))
+                    )
+                    .clickable {
+                        onClearProjectError()
+                        if (antigravityModels.isEmpty() || codexModels.isEmpty()) onRefreshModels()
+                        showCreateDialog = true
+                    }
+                    .testTag("btn_new_project")
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CreateNewFolder,
+                        contentDescription = null,
+                        tint = if (connState.paired && connState.desktopOnline) ClawColors.OnPrimary else ClawColors.TextSecondary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "新建项目",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (connState.paired && connState.desktopOnline) ClawColors.OnPrimary else ClawColors.TextSecondary,
+                        maxLines = 1
+                    )
+                }
+            }
         }
 
         // Row 1: Instant Search Bar + Segmented View Switcher (时间 | 项目)
@@ -1804,8 +2134,8 @@ private fun CompactSessionRow(
     val isError = item.status == "error"
 
     val rowBg = when {
-        isRunning -> Color(0xFF17211D)
-        isWaiting -> Color(0xFF211C14)
+        isRunning -> ClawColors.RunningRowBg
+        isWaiting -> ClawColors.WarningBg
         else -> Color.Transparent
     }
 
@@ -2066,6 +2396,345 @@ private fun PulsingStatusDot(color: Color, sizeDp: Int = 7) {
     )
 }
 
+// ─── New Project Dialog ──────────────────────────────────────────────────────
+
+private val INVALID_FOLDER_CHAR_REGEX = Regex("""[<>:"/\\|?*\x00-\x1F]""")
+
+@Composable
+internal fun CreateProjectDialog(
+    desktopOnline: Boolean,
+    effectiveProjectsRoot: String,
+    projectCreation: ProjectCreationState,
+    antigravityModels: List<ModelOptionUi>,
+    codexModels: List<ModelOptionUi>,
+    onRefreshModels: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onConfirmCreate: (String, String, String, String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = { if (!projectCreation.creating) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        CreateProjectDialogCard(
+            desktopOnline = desktopOnline,
+            effectiveProjectsRoot = effectiveProjectsRoot,
+            projectCreation = projectCreation,
+            antigravityModels = antigravityModels,
+            codexModels = codexModels,
+            onOpenSettings = onOpenSettings,
+            onConfirmCreate = onConfirmCreate,
+            onDismiss = onDismiss,
+        )
+    }
+}
+
+@Composable
+internal fun CreateProjectDialogCard(
+    desktopOnline: Boolean,
+    effectiveProjectsRoot: String,
+    projectCreation: ProjectCreationState,
+    antigravityModels: List<ModelOptionUi>,
+    codexModels: List<ModelOptionUi>,
+    onOpenSettings: () -> Unit,
+    onConfirmCreate: (String, String, String, String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var folderName by rememberSaveable { mutableStateOf("") }
+    var selectedSource by rememberSaveable { mutableStateOf("antigravity") }
+    var selectedModelId by rememberSaveable { mutableStateOf("") }
+    var selectedModelLabel by rememberSaveable { mutableStateOf("") }
+    var initialPrompt by rememberSaveable { mutableStateOf("") }
+    var localValidationError by remember { mutableStateOf<String?>(null) }
+
+    val activeModelList = if (selectedSource == "codex") codexModels else antigravityModels
+    val cleanFolder = folderName.trim().trimEnd('.', ' ')
+    val previewFullPath = remember(effectiveProjectsRoot, cleanFolder) {
+        val base = effectiveProjectsRoot.trimEnd('\\', '/')
+        val sep = if (base.contains('/')) "/" else "\\"
+        if (cleanFolder.isEmpty()) "$base$sep<新文件夹名>" else "$base$sep$cleanFolder"
+    }
+
+    if (true) {
+        Surface(
+            shape = ClawDimens.CardShape,
+            color = ClawColors.Surface,
+            border = BorderStroke(1.dp, ClawColors.PrimaryBorder),
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .testTag("create_project_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        Icon(
+                            imageVector = Icons.Rounded.CreateNewFolder,
+                            contentDescription = null,
+                            tint = ClawColors.Accent,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "在电脑新建 Project",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = ClawColors.TextPrimary
+                        )
+                    }
+                    IconButton(
+                        onClick = onDismiss,
+                        enabled = !projectCreation.creating,
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = ClawColors.TextSecondary)
+                    }
+                }
+
+                // Engine Switcher: Antigravity vs Codex
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(
+                        "antigravity" to "Antigravity 项目",
+                        "codex" to "Codex 项目"
+                    ).forEach { (srcKey, srcTitle) ->
+                        val active = selectedSource == srcKey
+                        Surface(
+                            color = if (active) ClawColors.Primary else ClawColors.SurfaceElevated,
+                            shape = ClawDimens.NestedShape,
+                            border = BorderStroke(1.dp, if (active) ClawColors.Primary else ClawColors.Border),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(ClawDimens.NestedShape)
+                                .clickable(enabled = !projectCreation.creating) {
+                                    selectedSource = srcKey
+                                    selectedModelId = ""
+                                    selectedModelLabel = ""
+                                }
+                                .testTag("new_proj_source_$srcKey")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(vertical = 9.dp, horizontal = 8.dp)
+                            ) {
+                                Text(
+                                    text = srcTitle,
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
+                                    ),
+                                    color = if (active) ClawColors.OnPrimary else ClawColors.TextSecondary,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = folderName,
+                    onValueChange = {
+                        folderName = it.take(80)
+                        localValidationError = null
+                    },
+                    enabled = !projectCreation.creating,
+                    label = { Text("自定义项目文件夹名") },
+                    placeholder = { Text("例如：校园跑腿小程序 / ai-agent-demo") },
+                    singleLine = true,
+                    shape = ClawDimens.NestedShape,
+                    colors = clawTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("new_proj_name_input")
+                )
+
+                // Live Workspace Directory Preview + Quick Jump to Settings
+                Surface(
+                    color = ClawColors.Canvas,
+                    shape = ClawDimens.NestedShape,
+                    border = ClawDimens.HairlineBorder,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "电脑创建路径（默认 C 盘桌面）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ClawColors.TextMuted
+                            )
+                            Text(
+                                text = "去设置更改目录",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = ClawColors.Accent,
+                                modifier = Modifier.clickable(enabled = !projectCreation.creating) { onOpenSettings() }
+                            )
+                        }
+                        Text(
+                            text = previewFullPath,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.5.sp),
+                            color = ClawColors.TextPrimary
+                        )
+                    }
+                }
+
+                // Optional Model Selection Chips
+                if (activeModelList.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "初始任务模型（可选）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ClawColors.TextSecondary
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CompactFilterPill(
+                                label = "默认模型",
+                                selected = selectedModelId.isEmpty(),
+                                onClick = {
+                                    selectedModelId = ""
+                                    selectedModelLabel = ""
+                                }
+                            )
+                            activeModelList.take(10).forEach { m ->
+                                CompactFilterPill(
+                                    label = m.label,
+                                    selected = selectedModelId == m.modelId,
+                                    onClick = {
+                                        selectedModelId = m.modelId
+                                        selectedModelLabel = m.label
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = initialPrompt,
+                    onValueChange = { initialPrompt = it },
+                    enabled = !projectCreation.creating,
+                    label = { Text("首条开发指令（可选，留空仅创建空项目）") },
+                    placeholder = { Text("例如：初始化一个现代化的 Vue3 + Tailwind 项目结构...") },
+                    maxLines = 3,
+                    shape = ClawDimens.NestedShape,
+                    colors = clawTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("new_proj_prompt_input")
+                )
+
+                val displayError = localValidationError ?: projectCreation.error
+                if (!displayError.isNullOrBlank()) {
+                    Surface(
+                        color = ClawColors.ErrorBg,
+                        shape = ClawDimens.NestedShape,
+                        border = BorderStroke(1.dp, ClawColors.ErrorBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = displayError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ClawColors.Error,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+
+                if (!desktopOnline) {
+                    Text(
+                        text = "提示：桌面桥当前离线，请先恢复连接后再新建项目。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ClawColors.Warning
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        enabled = !projectCreation.creating,
+                        shape = ClawDimens.NestedShape,
+                        border = ClawDimens.HairlineBorder,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("取消", color = ClawColors.TextSecondary, style = MaterialTheme.typography.labelMedium)
+                    }
+                    Button(
+                        onClick = {
+                            when {
+                                cleanFolder.isEmpty() -> {
+                                    localValidationError = "请输入项目文件夹名称"
+                                }
+                                cleanFolder == "." || cleanFolder == ".." -> {
+                                    localValidationError = "文件夹名称不合法"
+                                }
+                                INVALID_FOLDER_CHAR_REGEX.containsMatchIn(cleanFolder) -> {
+                                    localValidationError = "文件夹名不能包含 \\ / : * ? \" < > | 等特殊符号"
+                                }
+                                else -> {
+                                    localValidationError = null
+                                    onConfirmCreate(
+                                        cleanFolder,
+                                        selectedSource,
+                                        selectedModelId,
+                                        selectedModelLabel,
+                                        initialPrompt.trim()
+                                    )
+                                }
+                            }
+                        },
+                        enabled = desktopOnline && !projectCreation.creating,
+                        shape = ClawDimens.NestedShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ClawColors.Primary,
+                            contentColor = ClawColors.OnPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1.6f)
+                            .testTag("new_proj_confirm_btn")
+                    ) {
+                        if (projectCreation.creating) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(15.dp),
+                                strokeWidth = 2.dp,
+                                color = ClawColors.OnPrimary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("正在电脑创建...", style = MaterialTheme.typography.labelMedium)
+                        } else {
+                            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("创建并进入对话", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ─── Settings Screen ─────────────────────────────────────────────────────────
 
 @Composable
@@ -2073,10 +2742,22 @@ internal fun SettingsScreenContent(
     appSettings: AppSettings,
     connState: ConnectionUiState,
     isWhitelisted: Boolean,
+    workspaceConfig: WorkspaceConfigState = WorkspaceConfigState(),
+    lanSnapshot: LanPairingSnapshot = LanPairingSnapshot(),
+    onConnectManualLanHost: (String) -> Unit = {},
+    onUnpairLan: () -> Unit = {},
+    onSaveProjectsRootDir: (String) -> Unit = {},
+    onResetProjectsRootDir: () -> Unit = {},
+    onClearWorkspaceFeedback: () -> Unit = {},
+    onSetDarkMode: (Boolean) -> Unit = {},
+    onUpdateSectionColor: (ThemeSectionKey, Int?) -> Unit = { _, _ -> },
+    onApplyThemePreset: (SectionColorOverrides) -> Unit = {},
+    onResetThemeColors: () -> Unit = {},
     onSaveRelayConfig: (String, Boolean) -> Unit,
     onUnpairAndReset: () -> Unit,
     onSavePin: (String) -> Unit,
     onUpdatePrefs: (Boolean?, Boolean?, Boolean?, String?, String?) -> Unit,
+    onUpdateTaskDoneNotify: (Boolean) -> Unit = {},
     onRequestBatteryWhitelist: () -> Unit,
     onOpenRomAutostartSettings: () -> Unit,
     onNavigateHomeForPair: () -> Unit,
@@ -2086,9 +2767,28 @@ internal fun SettingsScreenContent(
     var showSelfSignedWarning by remember { mutableStateOf(false) }
     var statusBanner by remember { mutableStateOf<String?>(null) }
 
+    val syncedRootDir = workspaceConfig.projectsRootDir
+        .ifBlank { appSettings.projectsRootDir }
+        .ifBlank { workspaceConfig.defaultDesktopDir }
+    var projectsRootInput by remember(syncedRootDir) { mutableStateOf(syncedRootDir) }
+
     var pinInput by remember { mutableStateOf("") }
     var dndStartInput by remember(appSettings.dndStart) { mutableStateOf(appSettings.dndStart) }
     var dndEndInput by remember(appSettings.dndEnd) { mutableStateOf(appSettings.dndEnd) }
+
+    LaunchedEffect(statusBanner) {
+        if (statusBanner != null) {
+            delay(3_000L)
+            statusBanner = null
+        }
+    }
+
+    LaunchedEffect(workspaceConfig.feedbackMessage, workspaceConfig.seq) {
+        if (workspaceConfig.feedbackMessage != null) {
+            delay(3_000L)
+            onClearWorkspaceFeedback()
+        }
+    }
 
     if (showSelfSignedWarning) {
         AlertDialog(
@@ -2160,7 +2860,138 @@ internal fun SettingsScreenContent(
             }
         }
 
-        // 1. 中继服务器设置
+        if (workspaceConfig.feedbackMessage != null) {
+            Surface(
+                color = if (workspaceConfig.isError) ClawColors.ErrorBg else ClawColors.AccentSoft,
+                shape = ClawDimens.NestedShape,
+                border = BorderStroke(1.dp, if (workspaceConfig.isError) ClawColors.ErrorBorder else ClawColors.AccentBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = workspaceConfig.feedbackMessage,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (workspaceConfig.isError) ClawColors.Error else ClawColors.TextPrimary
+                )
+            }
+        }
+
+        // 0A. 外观模式（黑夜 / 白天一键切换）与六大板块自由取色器
+        ThemeCustomizationCard(
+            themeConfig = appSettings.themeConfig,
+            onSetDarkMode = onSetDarkMode,
+            onUpdateSectionColor = onUpdateSectionColor,
+            onApplyPreset = onApplyThemePreset,
+            onResetCurrentMode = onResetThemeColors,
+        )
+
+        // 0. 新建项目默认工作目录（默认 C 盘桌面，可随时更改与恢复）
+        Card(
+            shape = ClawDimens.CardShape,
+            colors = CardDefaults.cardColors(containerColor = ClawColors.Surface),
+            border = BorderStroke(1.dp, ClawColors.PrimaryBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(ClawDimens.CardPadding),
+                verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Rounded.FolderOpen,
+                        contentDescription = null,
+                        tint = ClawColors.Accent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "新建项目工作区目录",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = ClawColors.TextPrimary
+                    )
+                }
+                Text(
+                    text = "手机新建 Projects 时，将在电脑此路径下创建自定义命名的项目文件夹。默认位于 C 盘桌面。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ClawColors.TextSecondary
+                )
+                OutlinedTextField(
+                    value = projectsRootInput,
+                    onValueChange = { projectsRootInput = it },
+                    label = { Text("电脑项目根目录路径") },
+                    placeholder = {
+                        Text(
+                            workspaceConfig.defaultDesktopDir.ifBlank { "C:\\Users\\<User>\\Desktop" }
+                        )
+                    },
+                    singleLine = true,
+                    shape = ClawDimens.NestedShape,
+                    colors = clawTextFieldColors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_projects_root_input")
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val def = workspaceConfig.defaultDesktopDir
+                            if (def.isNotBlank()) projectsRootInput = def
+                            onResetProjectsRootDir()
+                        },
+                        enabled = !workspaceConfig.saving,
+                        shape = ClawDimens.NestedShape,
+                        border = ClawDimens.HairlineBorder,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("settings_reset_projects_root_btn")
+                    ) {
+                        Text(
+                            text = "恢复 C 盘桌面",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = ClawColors.TextPrimary
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            onSaveProjectsRootDir(projectsRootInput.trim())
+                        },
+                        enabled = projectsRootInput.isNotBlank() && !workspaceConfig.saving,
+                        shape = ClawDimens.NestedShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ClawColors.Primary,
+                            contentColor = ClawColors.OnPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .testTag("settings_save_projects_root_btn")
+                    ) {
+                        Text(
+                            text = if (workspaceConfig.saving) "同步中..." else "保存默认目录",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+            }
+        }
+
+        // 1A. 内网直连 (LAN) 独立配置与 Keystore 凭证管理
+        LanSettingsCard(
+            lanSnapshot = lanSnapshot,
+            connState = connState,
+            onConnectManualHost = { host ->
+                onConnectManualLanHost(host)
+                statusBanner = "已切换至内网直连并尝试连接 $host"
+            },
+            onUnpairLan = {
+                onUnpairLan()
+                statusBanner = "已解除内网直连绑定（不影响外网配对）"
+            }
+        )
+
+        // 1B. 外网中继服务器设置
         Card(
             shape = ClawDimens.CardShape,
             colors = CardDefaults.cardColors(containerColor = ClawColors.Surface),
@@ -2240,25 +3071,25 @@ internal fun SettingsScreenContent(
                 modifier = Modifier.padding(ClawDimens.CardPadding),
                 verticalArrangement = Arrangement.spacedBy(ClawDimens.SpaceMd)
             ) {
-                Text("配对与设备信息", style = MaterialTheme.typography.titleMedium, color = ClawColors.TextPrimary)
+                Text("外网配对与设备信息", style = MaterialTheme.typography.titleMedium, color = ClawColors.TextPrimary)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     SettingsMetaRow(label = "本机设备 ID", value = appSettings.deviceId)
                     SettingsMetaRow(
-                        label = "绑定状态",
-                        value = if (connState.paired) "已绑定 · ${appSettings.pairedBridgeId}" else "未绑定"
+                        label = "外网绑定状态",
+                        value = if (appSettings.isPaired) "已绑定 · ${appSettings.pairedBridgeId}" else "未绑定"
                     )
                 }
                 OutlinedButton(
                     onClick = {
                         onUnpairAndReset()
-                        statusBanner = "已解除当前配对，请在首页重新输入 6 位配对码"
+                        statusBanner = "已解除外网中继配对，请在首页外网模式下重新输入 6 位配对码"
                         onNavigateHomeForPair()
                     },
                     shape = ClawDimens.NestedShape,
                     border = ClawDimens.HairlineBorder,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("重新配对 / 解除当前绑定", style = MaterialTheme.typography.labelMedium, color = ClawColors.TextPrimary)
+                    Text("重新配对外网中继 / 解除外网绑定", style = MaterialTheme.typography.labelMedium, color = ClawColors.TextPrimary)
                 }
             }
         }
@@ -2432,6 +3263,34 @@ internal fun SettingsScreenContent(
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "会话任务结束通知",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = ClawColors.TextPrimary
+                        )
+                        Text(
+                            text = "每个会话任务执行完成时发送消息到手机通知栏，点击直达该对话",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ClawColors.TextMuted
+                        )
+                    }
+                    Switch(
+                        checked = appSettings.notificationsEnabled && appSettings.taskDoneNotifyEnabled,
+                        enabled = appSettings.notificationsEnabled,
+                        colors = switchColors,
+                        onCheckedChange = { enabled -> onUpdateTaskDoneNotify(enabled) },
+                        modifier = Modifier.testTag("switch_task_done_notify")
+                    )
+                }
+
+                HorizontalDivider(color = ClawColors.Border)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -2484,7 +3343,7 @@ internal fun SettingsScreenContent(
 }
 
 @Composable
-private fun SettingsMetaRow(label: String, value: String) {
+internal fun SettingsMetaRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),

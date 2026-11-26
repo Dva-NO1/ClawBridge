@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      LAN Direct mode connects over local Wi-Fi/Ethernet to ws://<LAN_IP>:18791.
+      WAN RelayTransport strictly enforces wss:// TLS in code and rejects non-loopback ws://.
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -13,18 +13,27 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { logger } from './logger.mjs';
 import { findEditorTarget, connectToTarget, injectAndSubmit } from './cdp-client.mjs';
 import { buildSwitchConversationScript } from './antigravity-dom.mjs';
+import {
+  getSessionModelChoice,
+  saveSessionModelChoice,
+  saveCreatedProjectRecord,
+  loadModelCatalogCache,
+  saveModelCatalogCache,
+} from './claw-config.mjs';
 
 export const MOBILE_USER_PROMPT_PREFIX = '[用户本人通过手机端发来指令，请直接按用户请求执行]\n';
 export const LEGACY_MOBILE_USER_PROMPT_PREFIX = '[ClawBridge手机端用户消息]\n';
 
+const bootCachedAg = loadModelCatalogCache()?.antigravity;
 let cachedModelCatalog = {
   fetchedAt: 0,
-  models: [],
-  defaultModelId: '',
+  models: Array.isArray(bootCachedAg?.models) ? bootCachedAg.models : [],
+  defaultModelId: String(bootCachedAg?.defaultModelId || ''),
 };
 
 const SLUG_TO_MODEL_HINT = [
@@ -82,15 +91,14 @@ function getAntigravityHomeDir() {
 }
 
 function getLanguageServerExePath() {
-  const localAppData = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || process.env.HOME || '.', 'AppData', 'Local');
   const candidates = [
-    process.env.ANTIGRAVITY_LANGUAGE_SERVER_EXE || '',
-    path.join(localAppData, 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe'),
-  ].filter(Boolean);
+    '%LOCALAPPDATA%\\Programs\\antigravity\\resources\\bin\\language_server.exe',
+    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'antigravity', 'resources', 'bin', 'language_server.exe'),
+  ];
   for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+    if (p && fs.existsSync(p)) return p;
   }
-  return candidates[0] || '';
+  return candidates[0];
 }
 
 function isPidAlive(pid) {
@@ -308,11 +316,56 @@ export async function fetchAntigravityModelCatalog({ forceRefresh = false } = {}
       models,
       defaultModelId,
     };
+    if (models.length > 0) {
+      saveModelCatalogCache({ antigravity: { models, defaultModelId } });
+    }
   } catch (err) {
     logger.warn('AntigravityExec', `GetCascadeModelConfigData warning: ${err.message}`);
   }
 
   return cachedModelCatalog;
+}
+
+/**
+ * Resolves and auto-heals Antigravity model IDs against the live Hub catalog.
+ * Fixes intermittent model switch failures when MODEL_PLACEHOLDER_* IDs rotate across Antigravity restarts.
+ */
+export async function resolveValidAntigravityModel(rawModelId = '', rawModelLabel = '') {
+  const id = String(rawModelId || '').trim();
+  const label = String(rawModelLabel || '').trim();
+  if (!id && !label) return { modelId: '', modelLabel: '' };
+
+  const matchInCatalog = (list) => {
+    if (!Array.isArray(list) || list.length === 0) return null;
+    if (id) {
+      const exactId = list.find((m) => m.modelId === id);
+      if (exactId) return exactId;
+    }
+    if (label) {
+      const exactLabel = list.find((m) => m.label.toLowerCase() === label.toLowerCase());
+      if (exactLabel) return exactLabel;
+    }
+    if (id) {
+      const bySlug = resolveAntigravityTranscriptModel(id);
+      if (bySlug.modelId) {
+        const found = list.find((m) => m.modelId === bySlug.modelId);
+        if (found) return found;
+      }
+      const idAsLabel = list.find((m) => m.label.toLowerCase() === id.toLowerCase());
+      if (idAsLabel) return idAsLabel;
+    }
+    return null;
+  };
+
+  let hit = matchInCatalog(cachedModelCatalog.models);
+  if (!hit) {
+    await fetchAntigravityModelCatalog({ forceRefresh: true }).catch(() => {});
+    hit = matchInCatalog(cachedModelCatalog.models);
+  }
+  if (hit) {
+    return { modelId: hit.modelId, modelLabel: hit.label };
+  }
+  return { modelId: id, modelLabel: label || id };
 }
 
 export function getAntigravityStateDefaultModelId() {
@@ -356,7 +409,7 @@ export function syncAntigravityLastSelectedModel(modelId) {
 export async function sendAntigravityMessage(
   sessionId,
   text,
-  { cdpAvailable = false, title = '', modelId = '', mediaItems = [] } = {}
+  { cdpAvailable = false, title = '', modelId = '', modelLabel = '', mediaItems = [] } = {}
 ) {
   const cleanText = String(text || '').trim();
   const validMedia = Array.isArray(mediaItems)
@@ -370,7 +423,18 @@ export async function sendAntigravityMessage(
   }
 
   let agentApiErrorSummary = '';
-  const cleanModelId = String(modelId || '').trim();
+  const savedChoice = getSessionModelChoice('antigravity', sessionId);
+  const resolvedModel = await resolveValidAntigravityModel(
+    modelId || savedChoice?.modelId || '',
+    modelLabel || savedChoice?.modelLabel || ''
+  );
+  let cleanModelId = resolvedModel.modelId;
+  if (cleanModelId && savedChoice && savedChoice.modelId !== cleanModelId) {
+    saveSessionModelChoice('antigravity', sessionId, {
+      modelId: cleanModelId,
+      modelLabel: resolvedModel.modelLabel || savedChoice.modelLabel,
+    });
+  }
   const effectiveText = cleanText || '请查看我从手机发送的图片。';
 
   const hub = discoverActiveAntigravityHub();
@@ -379,7 +443,7 @@ export async function sendAntigravityMessage(
     logger.warn('AntigravityExec', `Hub discovery failed for session ${sessionId.slice(0, 8)}: ${hub.reason}`);
   } else {
     // 1A. Primary path: ConnectRPC `SendUserCascadeMessage` (native USER_REQUEST + media + live `requestedModel` switch!)
-    try {
+    const trySendCascadeRpc = async (targetModelId) => {
       const rpcBody = {
         cascadeId: sessionId,
         items: [{ text: effectiveText }],
@@ -391,15 +455,14 @@ export async function sendAntigravityMessage(
           inlineData: String(m.inlineData),
         }));
       }
-      if (cleanModelId) {
+      if (targetModelId) {
         rpcBody.cascadeConfig = {
           plannerConfig: {
-            requestedModel: { model: cleanModelId },
+            requestedModel: { model: targetModelId },
           },
         };
       }
-
-      const rpcRes = await fetch(
+      return fetch(
         `http://127.0.0.1:${hub.httpPort}/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage`,
         {
           method: 'POST',
@@ -412,6 +475,23 @@ export async function sendAntigravityMessage(
           signal: AbortSignal.timeout(20_000),
         }
       );
+    };
+
+    try {
+      let rpcRes = await trySendCascadeRpc(cleanModelId);
+      // Auto-heal stale placeholder modelId on HTTP 400 by refreshing catalog and retrying once
+      if (!rpcRes.ok && rpcRes.status === 400 && cleanModelId) {
+        await fetchAntigravityModelCatalog({ forceRefresh: true }).catch(() => {});
+        const healed = await resolveValidAntigravityModel('', resolvedModel.modelLabel || modelLabel || savedChoice?.modelLabel || '');
+        if (healed.modelId && healed.modelId !== cleanModelId) {
+          cleanModelId = healed.modelId;
+          saveSessionModelChoice('antigravity', sessionId, { modelId: healed.modelId, modelLabel: healed.modelLabel });
+          rpcRes = await trySendCascadeRpc(cleanModelId);
+        } else {
+          cleanModelId = '';
+          rpcRes = await trySendCascadeRpc('');
+        }
+      }
 
       if (rpcRes.ok) {
         if (cleanModelId) syncAntigravityLastSelectedModel(cleanModelId);
@@ -493,6 +573,114 @@ export async function sendAntigravityMessage(
   }
 
   throw new Error(`${agentApiErrorSummary}（且桌面端未启用 CDP 9222 备用通道）`);
+}
+
+export async function createAntigravityProjectSession({
+  workspaceDir,
+  title,
+  modelId = '',
+  modelLabel = '',
+  initialPrompt = '',
+  cdpAvailable = false,
+} = {}) {
+  const hub = discoverActiveAntigravityHub();
+  if (!hub.ok) {
+    throw new Error(`无法创建 Antigravity 项目会话：${hub.reason}`);
+  }
+  const absDir = path.resolve(workspaceDir);
+  fs.mkdirSync(absDir, { recursive: true });
+  const wsUri = pathToFileURL(absDir).href;
+  const projectName = path.basename(absDir);
+  const cleanTitle = String(title || projectName).trim() || projectName;
+
+  const startRes = await fetch(
+    `http://127.0.0.1:${hub.httpPort}/exa.language_server_pb.LanguageServerService/StartCascade`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Connect-Protocol-Version': '1',
+        'x-codeium-csrf-token': hub.csrfToken,
+      },
+      body: JSON.stringify({
+        source: 'CORTEX_TRAJECTORY_SOURCE_CASCADE_CLIENT',
+        metadata: { ideName: 'antigravity', extensionName: 'antigravity', locale: 'zh-CN' },
+        workspaces: [{ workspaceFolderAbsoluteUri: wsUri }],
+      }),
+      signal: AbortSignal.timeout(12_000),
+    }
+  );
+  if (!startRes.ok) {
+    const errTxt = (await startRes.text()).slice(0, 240);
+    throw new Error(`StartCascade HTTP ${startRes.status}: ${errTxt}`);
+  }
+  const startData = await startRes.json();
+  const cascadeId = String(startData?.cascadeId || '').trim();
+  if (!cascadeId) {
+    throw new Error('StartCascade 未返回有效的会话 ID');
+  }
+
+  // Set user-visible title via ConversationService
+  await fetch(`http://127.0.0.1:${hub.httpPort}/product.v1.ConversationService/UpdateConversation`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Connect-Protocol-Version': '1',
+      'x-antigravity-csrf-token': hub.csrfToken,
+      'x-codeium-csrf-token': hub.csrfToken,
+    },
+    body: JSON.stringify({
+      conversationId: cascadeId,
+      annotations: { title: cleanTitle },
+    }),
+    signal: AbortSignal.timeout(6000),
+  }).catch(() => {});
+
+  const resolved = await resolveValidAntigravityModel(modelId, modelLabel);
+  if (resolved.modelId) {
+    saveSessionModelChoice('antigravity', cascadeId, {
+      modelId: resolved.modelId,
+      modelLabel: resolved.modelLabel || modelLabel || resolved.modelId,
+    });
+    syncAntigravityLastSelectedModel(resolved.modelId);
+  }
+
+  const wsPosix = absDir.replace(/\\/g, '/');
+  saveCreatedProjectRecord(cascadeId, {
+    source: 'antigravity',
+    title: cleanTitle,
+    project: projectName,
+    workspacePath: wsPosix,
+    currentModelId: resolved.modelId || '',
+    currentModelLabel: resolved.modelLabel || '',
+  });
+
+  const cleanPrompt = String(initialPrompt || '').trim();
+  if (cleanPrompt) {
+    await sendAntigravityMessage(cascadeId, cleanPrompt, {
+      cdpAvailable,
+      title: cleanTitle,
+      modelId: resolved.modelId,
+      modelLabel: resolved.modelLabel,
+    });
+  }
+
+  logger.info('AntigravityExec', `Created new Antigravity project "${projectName}" (${absDir}) -> session ${cascadeId.slice(0, 8)}`);
+  return {
+    id: cascadeId,
+    source: 'antigravity',
+    title: cleanTitle,
+    project: projectName,
+    workspacePath: wsPosix,
+    preview: cleanPrompt ? cleanPrompt.slice(0, 100) : `新建项目目录：${wsPosix}`,
+    status: cleanPrompt ? 'running' : 'done',
+    stepCount: cleanPrompt ? 1 : 0,
+    subagentCount: 0,
+    runningSubagentCount: 0,
+    updatedAt: Date.now(),
+    currentModelId: resolved.modelId || '',
+    currentModelLabel: resolved.modelLabel || '',
+  };
 }
 
 export async function createAntigravityConversation(promptText, { title = 'ClawBridge 助理会话', model = 'flash' } = {}) {

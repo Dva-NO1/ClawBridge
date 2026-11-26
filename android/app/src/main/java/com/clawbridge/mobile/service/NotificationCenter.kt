@@ -13,11 +13,15 @@ import com.clawbridge.mobile.ClawBridgeApp
 import com.clawbridge.mobile.MainActivity
 import com.clawbridge.mobile.R
 import com.clawbridge.mobile.data.AppSettings
+import com.clawbridge.mobile.data.MonitorRepository
+import com.clawbridge.mobile.data.SessionDetailState
+import com.clawbridge.mobile.data.SessionSummaryUi
 import com.clawbridge.mobile.data.SettingsStore
+import com.clawbridge.mobile.net.ConnectionTransport
 import com.clawbridge.mobile.net.RelayFrame
-import com.clawbridge.mobile.net.RelaySocketClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -30,6 +34,8 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.util.Calendar
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -47,7 +53,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class NotificationCenter(
     context: Context,
     private val settingsStore: SettingsStore,
-    private val socketClient: RelaySocketClient,
+    private val socketClient: ConnectionTransport,
+    private val monitorRepository: MonitorRepository? = null,
 ) {
     private val appContext = context.applicationContext
     // Single-threaded ordered dispatcher guarantees strict FIFO processing of burst notifications
@@ -55,6 +62,14 @@ class NotificationCenter(
     private val prefs = appContext.getSharedPreferences("clawbridge_notif_dedup", Context.MODE_PRIVATE)
     private val notifIdGen = AtomicInteger(3000)
     private var lastPostAtMs = 0L
+
+    // Cross-source per-session completion deduplication (prevents double-ping when both event.notify & local stream transition arrive)
+    private val recentTaskDoneBySession = ConcurrentHashMap<String, Long>()
+    // Local session state tracker: key "${source}:${id}" -> last observed status
+    private val observedSessionStatus = ConcurrentHashMap<String, String>()
+    private val pendingLocalDoneJobs = ConcurrentHashMap<String, Job>()
+    @Volatile
+    private var localSessionsSeeded = false
 
     init {
         ensureAlertChannel(appContext)
@@ -64,6 +79,107 @@ class NotificationCenter(
                     processEventNotify(frame)
                 }
             }
+        }
+        if (monitorRepository != null) {
+            orderedScope.launch {
+                monitorRepository.sessions.collect { list ->
+                    observeSessionListTransitions(list)
+                }
+            }
+            orderedScope.launch {
+                monitorRepository.activeDetail.collect { detail ->
+                    if (detail != null) {
+                        observeActiveDetailTransition(detail)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isBusyStatus(status: String): Boolean =
+        status == "running" || status == "waiting_approval"
+
+    private fun observeSessionListTransitions(list: List<SessionSummaryUi>) {
+        if (list.isEmpty()) return
+        if (!localSessionsSeeded) {
+            for (s in list) {
+                observedSessionStatus["${s.source}:${s.id}"] = s.status
+            }
+            localSessionsSeeded = true
+            return
+        }
+
+        for (s in list) {
+            val key = "${s.source}:${s.id}"
+            val prev = observedSessionStatus.put(key, s.status)
+            if (isBusyStatus(s.status)) {
+                recentTaskDoneBySession.remove(key)
+                pendingLocalDoneJobs.remove(key)?.cancel()
+            } else if (prev != null && isBusyStatus(prev) && s.status == "done") {
+                scheduleLocalTaskDoneNotification(s, fallbackSummary = s.preview)
+            }
+        }
+    }
+
+    private fun observeActiveDetailTransition(detail: SessionDetailState) {
+        if (detail.loading || detail.fromCache) return
+        val s = detail.session
+        val key = "${s.source}:${s.id}"
+        val lastMsg = detail.messages.lastOrNull()
+        val effectivelyRunning = isBusyStatus(s.status) ||
+            lastMsg?.status == "streaming" ||
+            (lastMsg?.role == "user" && lastMsg.id.startsWith("local-"))
+
+        val prev = observedSessionStatus[key]
+        if (effectivelyRunning) {
+            observedSessionStatus[key] = "running"
+            recentTaskDoneBySession.remove(key)
+            pendingLocalDoneJobs.remove(key)?.cancel()
+        } else if (prev != null && isBusyStatus(prev) && s.status == "done") {
+            observedSessionStatus[key] = "done"
+            val latestAgentReply = detail.messages.lastOrNull { it.role == "agent" && it.text.isNotBlank() }?.text
+            scheduleLocalTaskDoneNotification(s, fallbackSummary = latestAgentReply ?: s.preview)
+        }
+    }
+
+    private fun scheduleLocalTaskDoneNotification(session: SessionSummaryUi, fallbackSummary: String) {
+        val key = "${session.source}:${session.id}"
+        pendingLocalDoneJobs.remove(key)?.cancel()
+        pendingLocalDoneJobs[key] = orderedScope.launch {
+            delay(1_800L)
+            pendingLocalDoneJobs.remove(key)
+            if (observedSessionStatus[key] != "done") return@launch
+
+            val activeMatch = monitorRepository?.activeDetail?.value?.takeIf { it.session.id == session.id }
+            val latestAgentText = activeMatch?.messages
+                ?.lastOrNull { it.role == "agent" && it.text.isNotBlank() }
+                ?.text
+                ?: fallbackSummary
+            val cleanSummary = latestAgentText
+                .replace(Regex("```[\\s\\S]*?```"), "[代码块]")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .take(110)
+                .ifBlank { "会话本轮任务已执行完毕，点击查看详情" }
+
+            val badge = if (session.source == "codex") "Codex" else "AGY"
+            val proj = session.project.ifBlank { badge }
+            val syntheticFrame = RelayFrame(
+                type = "event.notify",
+                reqId = UUID.randomUUID().toString(),
+                ts = System.currentTimeMillis(),
+                payload = buildJsonObject {
+                    put("notifyId", JsonPrimitive("local-done-$key-${System.currentTimeMillis()}"))
+                    put("category", JsonPrimitive("task.done"))
+                    put("title", JsonPrimitive("✅ 任务已完成 · $proj ($badge)"))
+                    put("body", JsonPrimitive("「${session.title}」：$cleanSummary"))
+                    put("sessionId", JsonPrimitive(session.id))
+                    put("source", JsonPrimitive(session.source))
+                    put("project", JsonPrimitive(proj))
+                    put("ts", JsonPrimitive(System.currentTimeMillis()))
+                }
+            )
+            processEventNotify(syntheticFrame)
         }
     }
 
@@ -77,10 +193,22 @@ class NotificationCenter(
         if (!settings.notificationsEnabled) return
 
         val category = p["category"]?.jsonPrimitive?.contentOrNull ?: "event.notify"
+        if (category == "task.done" && !settings.taskDoneNotifyEnabled) return
+
         val title = p["title"]?.jsonPrimitive?.contentOrNull ?: defaultTitleFor(category)
         val body = p["body"]?.jsonPrimitive?.contentOrNull ?: ""
         val sessionId = p["sessionId"]?.jsonPrimitive?.contentOrNull ?: ""
         val source = p["source"]?.jsonPrimitive?.contentOrNull ?: "antigravity"
+
+        if (category == "task.done" && sessionId.isNotBlank()) {
+            val sessKey = "${source.lowercase()}:$sessionId"
+            val nowCheck = System.currentTimeMillis()
+            val prevAt = recentTaskDoneBySession[sessKey] ?: 0L
+            if (nowCheck - prevAt < 15_000L) {
+                return
+            }
+            recentTaskDoneBySession[sessKey] = nowCheck
+        }
         val riskLevel = p["riskLevel"]?.jsonPrimitive?.contentOrNull ?: "high"
         val approvalId = p["approvalId"]?.jsonPrimitive?.contentOrNull ?: ""
         val seq = p["seq"]?.jsonPrimitive?.intOrNull ?: notifIdGen.incrementAndGet()

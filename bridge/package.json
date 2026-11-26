@@ -1,6 +1,6 @@
 {
   "name": "clawbridge-desktop",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "description": "ClawBridge Desktop Bridge for Antigravity + Codex over WSS Relay",
@@ -10,7 +10,8 @@
     "start": "node --no-warnings src/index.mjs",
     "pair-code": "node --no-warnings src/index.mjs --show-pair-code",
     "re-pair": "node --no-warnings src/index.mjs --trigger-repair",
-    "test:wake": "node --no-warnings src/selftest-wake.mjs"
+    "test:wake": "node --no-warnings src/selftest-wake.mjs",
+    "selftest-loopback": "node --no-warnings src/selftest-loopback.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

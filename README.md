@@ -1,12 +1,12 @@
 # ClawBridge
 
-> **在安卓手机上无需 VPN / 内网穿透，通过自建轻量 WSS 中继远程管理桌面端 Antigravity 与 Codex。**
+> **在安卓手机上远程或局域网管理桌面端 Antigravity 与 Codex —— 支持同一 Wi-Fi「内网直连（免服务器 1ms 极速）」与跨网「自建轻量 WSS 中继」双模式一键切换。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
-ClawBridge 由三部分组成：**自建中继服务（`relay/`）**、**Windows 桌面桥（`bridge/`）**、**Android 原生客户端（`android/`）**。你可以在 5G / Wi-Fi 任意网络下实时查看多会话进展、监控双端模型配额、切换任务模型、收发消息与图片/文件、接收锁屏审批与完成推送。
+ClawBridge 由三部分组成：**自建中继服务（`relay/`，仅外网跨网需要）**、**Windows 桌面桥（`bridge/`）**、**Android 原生客户端（`android/`）**。你可以在同一局域网下免配置 VPS 直接局域网极速直连，也可以通过自建 VPS 中继在 5G 移动网下随时远程查看多会话进展、新建电脑项目、切换任务模型、收发消息与图片/文件、接收锁屏审批与任务完成通知。
 
-> 本项目基于开源底座 [AvenalJ/AntigravityMobile](https://github.com/AvenalJ/AntigravityMobile) 深度重构与扩展，详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [LICENSE](./LICENSE)。
+> 完整版本更新说明请查阅 **[CHANGELOG.md](./CHANGELOG.md)**。本项目基于开源底座 [AvenalJ/AntigravityMobile](https://github.com/AvenalJ/AntigravityMobile) 深度重构与扩展，详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 与 [LICENSE](./LICENSE)。
 
 ---
 
@@ -16,24 +16,27 @@ ClawBridge 由三部分组成：**自建中继服务（`relay/`）**、**Windows
 
 | 平台 | 安装包文件 | 说明 |
 | :--- | :--- | :--- |
-| **Android 手机端** | `ClawBridge-v1.1.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持从 `v1.0.0` 直接覆盖升级） |
-| **Windows 电脑端** | `ClawBridge-v1.1.0-windows-setup.exe` | 一键图形安装程序，内置 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
+| **Android 手机端** | `ClawBridge-v2.0.0-android.apk` | 已签名 Release APK，下载后直接安装（Android 8.0+，支持旧版本无缝覆盖升级） |
+| **Windows 电脑端** | `ClawBridge-v2.0.0-windows-setup.exe` | 一键图形安装程序，内置双模式 `ClawBridgeDesktop.exe`、桥源码与完整运行依赖（需本机 Node.js ≥ 22） |
 | **校验文件** | `SHA256SUMS.txt` | 官方发布的 SHA-256 哈希校验清单 |
 
-> **提示**：开源版不包含任何公共中继服务器。安装好手机 APK 与电脑 EXE 后，仍需按下方第 1 步在自己的 VPS 上一键部署中继，并在两端填入你自己的 `wss://relay.yourdomain.com`。
+> **提示**：若手机与电脑处于同一 Wi-Fi / 局域网，安装后直接在两端顶部大开关切至 **「内网直连」** 输入 6 位配对码即可免服务器使用；若需 5G 跨网远程控制，按下方第 1 步在自己的 VPS 上一键部署中继并填入 `wss://relay.yourdomain.com` 即可。
 
 ---
 
 ## 核心功能
 
-- **零 VPN 公网直连**：基于自有 VPS 上的轻量 WSS（TLS 1.2/1.3）中继，手机与桌面桥均主动外连，支持 DoH 防劫持、30 秒心跳保活、断线指数退避与 Windows 休眠唤醒自恢复。
-- **双引擎统一接入**：同时管理桌面端 **Antigravity**（Hub ConnectRPC + Transcript 实时镜像 + 可选 CDP 9222 兜底）与 **Codex CLI**（`codex app-server` JSON-RPC 2.0 + 无损 `thread/fork` 自动续接）。
+- **内网直连 / 外网中继双模式一键切换（v2.0.0 重磅新增）**：
+  - **内网直连（LAN Direct）**：手机与电脑同一 Wi-Fi 下通过 UDP `18792` 自动发现并直连 `ws://<LAN_IP>:18791`，1ms 局域网延迟，不经过任何外部服务器（断外网照常工作）；独立 6 位内网配对码签发 `lanToken` 存入 Android Keystore，支持记住上次 IP 快连与手动 IP 兜底。
+  - **外网中继（WAN Relay）**：基于自有 VPS 轻量 WSS（TLS 1.2/1.3）中继，支持 DoH 防劫持、30 秒心跳保活、断线指数退避与 Windows 休眠唤醒自恢复；内外网配对相互独立，切换模式不丢会话且无需重新配对。
+- **双引擎统一接入与手机端新建 Project（v2.0.0 新增）**：同时管理桌面端 **Antigravity** 与 **Codex CLI**；支持在手机端直接自定义文件夹名在电脑创建新 Project（默认位于电脑桌面 `Desktop`，可在手机设置页随时修改默认工作区根目录）。
+- **一键黑夜/白天模式与六大板块自由取色（v2.0.0 新增）**：内置 10 套青春高颜值主题预设，支持顶栏一键切换黑夜/白天模式，并提供 2D HSV 画布取色器自定义全局背景、卡片、导航栏、主按钮、强调色与聊天气泡配色。
+- **会话任务结束通知与分级 PIN 安全审批**：每个会话任务执行完成自动推送最新回复摘要到手机通知栏（点击直达对话）；低风险命令支持通知栏快捷批准，高风险命令强制在 App 内通过 **4–6 位安全 PIN** 校验后放行（内外网双模式同等生效）。
 - **双客户端独立配额看板**：直观的绿色「剩余额度条」，独立区分 **Codex (OpenAI) 5h / 7d 额度** 与 **Antigravity Gemini / 附赠 Claude 5h / 7d 额度**，附重置倒计时与免费重置券显示。
-- **高效会话列表、秒开双层缓存与阅读记忆**：顶部即时搜索（标题/项目/模型/预览/ID）、`时间 | 项目` 双视图切换、来源 + 状态双维筛选、置顶会话、上次阅读位置记忆；内置内存 + 磁盘双层会话缓存，点击历史对话秒开并后台静默同步最新消息。
-- **实时输出速度与花费预估面板（v1.1.0 新增）**：对话页底部新增可折叠实时指标栏，支持 Antigravity 与 Codex 双端实时展示解码 TPS、TTFT 首字延迟、端到端 TPS、本次输出 token、上下文用量进度条、缓存命中率与按公开 API 单价折算的预估花费（诚实区分精确值与 `≈` 估算值）；单价表放 `%APPDATA%\clawbridge\prices.json` 支持自行增改与热加载，可在 `config.json` 用 `"metricsEnabled": false` 关闭。
-- **手机端任务换模型与双向传文件**：会话内实时切换 Antigravity / Codex 模型；支持手机发图片（多模态直传）与传文件到电脑工作区，聊天内出现的文件/安装包路径自动生成一键下载按钮。
-- **分级审批与安全保护**：低风险命令可在锁屏通知一键批准；高风险命令（删除/格式化/安装/脚本执行等）由桌面桥硬编码拦截，强制在 App 内通过 **4–6 位安全 PIN** 校验后方可放行。
-- **无感静默托盘**：Windows 端编译为零黑窗托盘程序 `ClawBridgeDesktop.exe`，开机自启，点击托盘图标或按 `Ctrl+Alt+C` 随时呼出控制台。
+- **高效会话列表、秒开双层缓存与阅读记忆**：顶部即时搜索、`时间 | 项目` 双视图切换、来源 + 状态筛选、置顶会话、上次阅读位置记忆；内存 + 磁盘双层缓存实现历史对话秒开。
+- **实时输出速度与花费预估面板**：对话页底部可折叠实时指标栏，展示解码 TPS、TTFT、端到端 TPS、输出 token、上下文用量与按公开单价折算的预估花费。
+- **可靠任务换模型与双向传文件**：5 层防竞态与离线目录缓存保障 Antigravity / Codex 模型稳定切换；支持手机发图与传文件到电脑工作区，聊天内顶部提示横幅 3 秒自动消隐。
+- **无感静默托盘**：Windows 端编译为零黑窗托盘程序 `ClawBridgeDesktop.exe`，开机自启，点击托盘图标或按 `Ctrl+Alt+C` 随时呼出双模式控制台。
 
 ---
 
@@ -132,7 +135,7 @@ curl https://relay.yourdomain.com/healthz
 
 **前置条件**：Windows 10/11、Node.js ≥ 22、本地已安装 Antigravity 和/或 Codex CLI。
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.1.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.0-windows-setup.exe`，双击一键安装到 `%LOCALAPPDATA%\ClawBridge`（自动创建桌面快捷方式与登录自启）。
 - **方式 B（从源码安装）**：在 PowerShell 进入仓库根目录执行一键安装脚本（自动安装依赖、生成 `%APPDATA%\clawbridge\config.json`、编译 `ClawBridgeDesktop.exe` 并注册登录自启计划任务）：
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\bridge\scripts\install-bridge.ps1
@@ -149,7 +152,7 @@ curl https://relay.yourdomain.com/healthz
 
 ### 第 3 步：安装 Android App
 
-- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v1.1.0-android.apk` 并直接安装到手机。
+- **方式 A（推荐，直接安装）**：前往 [GitHub Releases](https://github.com/Dva-NO1/ClawBridge/releases/latest) 下载 `ClawBridge-v2.0.0-android.apk` 并直接安装到手机。
 - **方式 B（从源码自行构建）**：详见完整构建说明 [BUILD.md](./BUILD.md)。简要命令：
 
 ```bash
@@ -202,7 +205,9 @@ cd android
 
 ## 文档导航
 
+- [CHANGELOG.md](./CHANGELOG.md) — 版本发布与功能/修复更新日志
 - [BUILD.md](./BUILD.md) — Android APK / Windows 托盘程序 / 中继服务干净环境构建说明
+- [docs/DUAL_MODE_DESIGN.md](./docs/DUAL_MODE_DESIGN.md) — 内网直连 / 外网中继双模式连接架构设计
 - [docs/DEVELOPMENT_GUIDE.md](./docs/DEVELOPMENT_GUIDE.md) — 项目里程碑与架构演进开发文档
 - [docs/RELAY_MIGRATION.md](./docs/RELAY_MIGRATION.md) — 零硬编码更换中继服务器与真机验收清单
 - [docs/SANITIZATION_REPORT.md](./docs/SANITIZATION_REPORT.md) — 开源发布脱敏自查报告

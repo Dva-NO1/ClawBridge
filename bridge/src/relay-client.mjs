@@ -17,8 +17,9 @@ import fs from 'node:fs';
 import { logger } from './logger.mjs';
 import { resilientLookup } from './dns-resolver.mjs';
 import { getPairingFilePath, saveConfig, writePairingCodeInfo, writeRuntimeStatus } from './claw-config.mjs';
+import { PROTOCOL_VERSION, parseAndValidateEnvelope, serializeEnvelope } from './transport-router.mjs';
 
-export const PROTOCOL_VERSION = 1;
+export { PROTOCOL_VERSION };
 
 const PING_INTERVAL_MS = 20_000;
 const PONG_TIMEOUT_MS = 8_000;
@@ -34,6 +35,7 @@ export class RelayClient extends EventEmitter {
     this.ws = null;
     this.running = false;
     this.manualPaused = false;
+    this.lanPaused = false;
     this.connected = false;
     this.authenticated = false;
     this.paired = false;
@@ -51,7 +53,7 @@ export class RelayClient extends EventEmitter {
 
     if (this.powerMonitor) {
       this.powerMonitor.on('resume', ({ source }) => {
-        if (!this.manualPaused) {
+        if (!this.manualPaused && !this.lanPaused) {
           this.forceReconnectNow(`wake:${source}`);
         }
       });
@@ -70,6 +72,7 @@ export class RelayClient extends EventEmitter {
   }
 
   start() {
+    this.lanPaused = false;
     this.manualPaused = false;
     if (this.running) {
       if (!this.ws && !this.reconnectTimer) this._connect();
@@ -78,6 +81,31 @@ export class RelayClient extends EventEmitter {
     this.running = true;
     this.backoffMs = BACKOFF_INITIAL_MS;
     this._connect();
+  }
+
+  pauseForLanMode() {
+    this.lanPaused = true;
+    this.running = false;
+    this._clearTimers();
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      try {
+        old.close(1000, 'switched_to_lan');
+      } catch { /* ignore */ }
+    }
+    this.connected = false;
+    this.authenticated = false;
+    this.peerOnline = false;
+  }
+
+  resumeFromLanMode() {
+    this.lanPaused = false;
+    if (!this.manualPaused) {
+      this.start();
+    } else {
+      this._syncStatus();
+    }
   }
 
   connectManually() {
@@ -134,9 +162,11 @@ export class RelayClient extends EventEmitter {
     if (!this.config._ephemeral) {
       saveConfig(this.config);
     }
-    this.manualPaused = false;
-    this.running = true;
-    this.forceReconnectNow('relay_config_changed');
+    if (!this.lanPaused && !this.config.lanEnabled) {
+      this.manualPaused = false;
+      this.running = true;
+      this.forceReconnectNow('relay_config_changed');
+    }
   }
 
   unpairAndRequestNewCode() {
@@ -213,14 +243,7 @@ export class RelayClient extends EventEmitter {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return false;
     }
-    const frame = JSON.stringify({
-      v: PROTOCOL_VERSION,
-      type,
-      reqId,
-      ts: Date.now(),
-      payload,
-    });
-    this.ws.send(frame);
+    this.ws.send(serializeEnvelope(type, payload, reqId));
     return true;
   }
 
@@ -305,35 +328,26 @@ export class RelayClient extends EventEmitter {
   }
 
   _handleFrame(rawText) {
-    let msg;
-    try {
-      msg = JSON.parse(rawText);
-    } catch {
-      logger.warn('RelayClient', 'Received invalid JSON frame');
-      return;
-    }
-
-    if (!msg || typeof msg !== 'object') return;
-
-    // Spec 4: Explicit error on protocol version mismatch
-    if (msg.v !== PROTOCOL_VERSION) {
-      const errMsg = `Protocol version mismatch: bridge expects v=${PROTOCOL_VERSION}, received v=${String(msg.v)}`;
-      logger.error('RelayClient', errMsg);
-      this.sendEnvelope(
-        'protocol.error',
-        {
-          code: 'version_mismatch',
-          message: errMsg,
+    const parsed = parseAndValidateEnvelope(rawText);
+    if (!parsed.ok) {
+      if (parsed.reason === 'version_mismatch') {
+        logger.error('RelayClient', parsed.errorFrame.payload.message);
+        this.sendEnvelope(
+          parsed.errorFrame.type,
+          parsed.errorFrame.payload,
+          parsed.errorFrame.reqId
+        );
+        this.emit('protocol.error', {
           expectedVersion: PROTOCOL_VERSION,
-          receivedVersion: msg.v ?? null,
-        },
-        msg.reqId || crypto.randomUUID()
-      );
-      this.emit('protocol.error', { expectedVersion: PROTOCOL_VERSION, receivedVersion: msg.v });
+          receivedVersion: parsed.receivedVersion,
+        });
+      } else {
+        logger.warn('RelayClient', `Ignored invalid frame (${parsed.reason})`);
+      }
       return;
     }
 
-    const { type, reqId, payload = {} } = msg;
+    const { type, reqId, ts, payload } = parsed.envelope;
 
     if (type === 'pong') {
       this._clearPongDeadline();
@@ -467,7 +481,7 @@ export class RelayClient extends EventEmitter {
     }
 
     // Dispatch business messages (session.*, quota.*, chat.send, approval.*, quick.command)
-    this.emit('message', { type, reqId, ts: msg.ts, payload });
+    this.emit('message', { type, reqId, ts, payload });
   }
 
   _startPingLoop() {
@@ -547,9 +561,11 @@ export class RelayClient extends EventEmitter {
   }
 
   _syncStatus() {
-    if (this.config._ephemeral) return;
+    if (this.config._ephemeral || this.lanPaused) return;
     writeRuntimeStatus({
       pid: process.pid,
+      connectionMode: 'wan',
+      lanEnabled: false,
       relayUrl: this.config.relayUrl,
       deviceId: this.config.deviceId,
       manualPaused: this.manualPaused,

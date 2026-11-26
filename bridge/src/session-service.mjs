@@ -26,7 +26,7 @@ import {
   getAntigravityStateDefaultModelId,
   resolveAntigravityTranscriptModel,
 } from './antigravity-executor.mjs';
-import { getSessionModelChoice } from './claw-config.mjs';
+import { getSessionModelChoice, loadCreatedProjectsMap } from './claw-config.mjs';
 
 const LIST_POLL_MS = 1200;
 const STREAM_POLL_MS = 500;
@@ -673,10 +673,14 @@ export class SessionService extends EventEmitter {
     }
 
     const brainRoot = path.join(getGeminiAntigravityDir(), 'brain');
+    const createdMap = loadCreatedProjectsMap();
 
-    return rows.map((r) => {
+    const dbSessions = rows.map((r) => {
       const cid = r.conversation_id;
-      const { project, workspacePath } = decodeWorkspaceInfo(r.workspace_uris);
+      const savedProj = createdMap[cid];
+      const decoded = decodeWorkspaceInfo(r.workspace_uris);
+      const project = decoded.workspacePath ? decoded.project : savedProj?.project || decoded.project;
+      const workspacePath = decoded.workspacePath || savedProj?.workspacePath || '';
       const children = childMap.get(cid) || [];
       const runningSubagents = children.filter(
         (c) => c.status === 'CASCADE_RUN_STATUS_RUNNING' || Number(c.not_fully_idle) === 1
@@ -701,20 +705,46 @@ export class SessionService extends EventEmitter {
         mappedStatus = 'error';
       }
 
+      const savedModel = getSessionModelChoice('antigravity', cid);
       return {
         id: cid,
         source: 'antigravity',
-        title: (r.title || '').trim() || '未命名会话',
+        title: (r.title || '').trim() || savedProj?.title || '未命名会话',
         project,
         workspacePath,
-        preview: cleanUserPrompt(r.preview || '').slice(0, 120) || `共 ${r.step_count || 0} 步`,
+        preview: cleanUserPrompt(r.preview || '').slice(0, 120) || savedProj?.preview || `共 ${r.step_count || 0} 步`,
         status: mappedStatus,
         stepCount: Number(r.step_count || 0),
         subagentCount: children.length,
         runningSubagentCount: runningSubagents,
         updatedAt,
+        currentModelId: savedModel?.modelId || savedProj?.currentModelId || '',
+        currentModelLabel: savedModel?.modelLabel || savedProj?.currentModelLabel || '',
       };
     });
+
+    // Include newly created empty Antigravity projects before their first message writes to SQLite
+    const seenIds = new Set(dbSessions.map((s) => s.id));
+    for (const [cid, rec] of Object.entries(createdMap)) {
+      if (!cid || seenIds.has(cid) || rec?.source !== 'antigravity') continue;
+      const savedModel = getSessionModelChoice('antigravity', cid);
+      dbSessions.push({
+        id: cid,
+        source: 'antigravity',
+        title: rec.title || rec.project || '新建项目',
+        project: rec.project || '新建项目',
+        workspacePath: rec.workspacePath || '',
+        preview: `新建项目目录：${rec.workspacePath || ''}`,
+        status: 'done',
+        stepCount: 0,
+        subagentCount: 0,
+        runningSubagentCount: 0,
+        updatedAt: Number(rec.updatedAt || Date.now()),
+        currentModelId: savedModel?.modelId || rec.currentModelId || '',
+        currentModelLabel: savedModel?.modelLabel || rec.currentModelLabel || '',
+      });
+    }
+    return dbSessions;
   }
 
   _readFullStepLine(sessionId, fullPath, zeroBasedLineIdx) {
@@ -1154,6 +1184,46 @@ export class SessionService extends EventEmitter {
             }
           }
         }
+      }
+    }
+
+    // 3. Merge newly created Codex projects & saved per-session model choices
+    const createdMap = loadCreatedProjectsMap();
+    for (const [cid, rec] of Object.entries(createdMap)) {
+      if (!rec || rec.source !== 'codex') continue;
+      if (!byId.has(cid)) {
+        byId.set(cid, {
+          id: cid,
+          source: 'codex',
+          title: rec.title || rec.project || `Codex 项目 ${cid.slice(0, 8)}`,
+          project: rec.project || 'Codex',
+          workspacePath: rec.workspacePath || '',
+          preview: `新建 Codex 项目：${rec.workspacePath || rec.project || ''}`,
+          status: 'done',
+          stepCount: 0,
+          subagentCount: 0,
+          runningSubagentCount: 0,
+          updatedAt: rec.updatedAt || Date.now(),
+          currentModelId: rec.currentModelId || '',
+          currentModelLabel: rec.currentModelLabel || '',
+        });
+      }
+    }
+
+    const codexCatalog = this.codexClient?.cachedModels || [];
+    for (const item of byId.values()) {
+      const saved = getSessionModelChoice('codex', item.id);
+      if (saved?.modelId) {
+        item.currentModelId = saved.modelId;
+        item.currentModelLabel =
+          saved.modelLabel ||
+          codexCatalog.find((m) => m.modelId === saved.modelId)?.label ||
+          saved.modelId;
+      } else if (item.currentModelId && (!item.currentModelLabel || item.currentModelLabel === item.currentModelId)) {
+        const hit = codexCatalog.find(
+          (m) => m.modelId === item.currentModelId || m.modelId.startsWith(`${item.currentModelId}#`)
+        );
+        if (hit) item.currentModelLabel = hit.label;
       }
     }
 

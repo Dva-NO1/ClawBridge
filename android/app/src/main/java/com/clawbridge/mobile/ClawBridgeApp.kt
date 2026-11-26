@@ -26,7 +26,7 @@ class ClawBridgeApp : Application() {
         socketClient = RelaySocketClient(this, settingsStore)
         monitorRepository = MonitorRepository(this, socketClient)
         // Subscribe NotificationCenter BEFORE socketClient.start() so offline queue bursts are never missed
-        notificationCenter = NotificationCenter(this, settingsStore, socketClient)
+        notificationCenter = NotificationCenter(this, settingsStore, socketClient, monitorRepository)
         socketClient.start()
         RelayForegroundService.start(this)
     }

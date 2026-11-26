@@ -15,6 +15,9 @@ config.json
 **/prices.json
 **/runtime-status.json
 **/pairing-code.json
+**/lan-pairing.json
+**/created-projects.json
+**/model-catalog-cache.json
 **/quota-cache.json
 **/session-models.json
 **/ipc.token

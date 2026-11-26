@@ -2,7 +2,7 @@
  * ClawBridge Configuration Manager (%APPDATA%\clawbridge\config.json)
  *
  * All settings are user-editable and reload on Bridge restart:
- *   - relayUrl (default placeholder wss://relay.example.com — replace with your own VPS relay URL)
+ *   - relayUrl (default wss://relay.example.com, NEVER hardcoded)
  *   - deviceId, deviceToken
  *   - quotaRefreshIntervalSec
  *   - assistantSessionId, personaPath, schedules
@@ -17,8 +17,13 @@ import { getAppDataDir, logger } from './logger.mjs';
 export const PLACEHOLDER_RELAY_URL = 'wss://relay.example.com';
 
 export function isPlaceholderRelayUrl(url) {
-  const s = String(url || '').trim();
-  return !s || /relay\.example\.com|your-domain|example\.com/i.test(s);
+  const u = String(url || '').trim();
+  return !u || /relay\.example\.com|your-domain|example\.com/i.test(u);
+}
+
+export function getDefaultDesktopDir() {
+  const home = process.env.USERPROFILE || os.homedir();
+  return path.join(home, 'Desktop');
 }
 
 export function getConfigPath() {
@@ -27,6 +32,32 @@ export function getConfigPath() {
 
 export function getPairingFilePath() {
   return path.join(getAppDataDir(), 'pairing-code.json');
+}
+
+export function getLanPairingFilePath() {
+  return path.join(getAppDataDir(), 'lan-pairing.json');
+}
+
+export function readLanPairingInfo() {
+  try {
+    const p = getLanPairingFilePath();
+    if (fs.existsSync(p)) {
+      return JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+export function writeLanPairingInfo(info) {
+  try {
+    const p = getLanPairingFilePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = `${p}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(info, null, 2), 'utf-8');
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    logger.warn('Config', `Failed writing lan-pairing.json: ${err.message}`);
+  }
 }
 
 export function getRepairTriggerPath() {
@@ -43,6 +74,64 @@ export function getSessionModelsFilePath() {
 
 export function getPricesFilePath() {
   return path.join(getAppDataDir(), 'prices.json');
+}
+
+export function getCreatedProjectsFilePath() {
+  return path.join(getAppDataDir(), 'created-projects.json');
+}
+
+export function getModelCatalogCachePath() {
+  return path.join(getAppDataDir(), 'model-catalog-cache.json');
+}
+
+export function loadCreatedProjectsMap() {
+  try {
+    const p = getCreatedProjectsFilePath();
+    if (fs.existsSync(p)) {
+      return JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+export function saveCreatedProjectRecord(sessionId, record) {
+  if (!sessionId || !record) return;
+  const map = loadCreatedProjectsMap();
+  map[sessionId] = { ...record, sessionId, updatedAt: Date.now() };
+  // Keep newest 60 entries
+  const entries = Object.entries(map).sort((a, b) => (b[1]?.updatedAt || 0) - (a[1]?.updatedAt || 0)).slice(0, 60);
+  const pruned = Object.fromEntries(entries);
+  try {
+    const p = getCreatedProjectsFilePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = `${p}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(pruned, null, 2), 'utf-8');
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    logger.warn('Config', `Failed saving created-projects.json: ${err.message}`);
+  }
+}
+
+export function loadModelCatalogCache() {
+  try {
+    const p = getModelCatalogCachePath();
+    if (fs.existsSync(p)) {
+      return JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
+    }
+  } catch { /* ignore */ }
+  return {};
+}
+
+export function saveModelCatalogCache(patch) {
+  try {
+    const cur = loadModelCatalogCache();
+    const next = { ...cur, ...patch, updatedAt: Date.now() };
+    const p = getModelCatalogCachePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = `${p}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8');
+    fs.renameSync(tmp, p);
+  } catch { /* ignore */ }
 }
 
 export function loadSessionModelsMap() {
@@ -98,6 +187,11 @@ function defaultConfig() {
     targetAntigravityVersion: '2.34.0',
     quotaRefreshIntervalSec: 300,
     metricsEnabled: true,
+    lanEnabled: false,
+    lanPort: 18791,
+    lanToken: '',
+    lastConnectionMode: 'wan',
+    projectsRootDir: getDefaultDesktopDir(),
     assistantSessionId: '',
     personaPath: repoPersona,
     schedules: {
@@ -134,6 +228,16 @@ export function loadConfig() {
   }
 
   merged.relayUrl = String(merged.relayUrl || base.relayUrl).trim();
+  merged.projectsRootDir = String(merged.projectsRootDir || '').trim() || getDefaultDesktopDir();
+  merged.lanEnabled = Boolean(merged.lanEnabled);
+  const parsedLanPort = Number(merged.lanPort);
+  merged.lanPort = parsedLanPort > 0 && parsedLanPort <= 65535 ? parsedLanPort : 18791;
+  merged.lanToken = typeof merged.lanToken === 'string' ? merged.lanToken.trim() : '';
+  merged.lastConnectionMode = merged.lanEnabled
+    ? 'lan'
+    : String(merged.lastConnectionMode || 'wan').toLowerCase() === 'lan'
+      ? 'lan'
+      : 'wan';
 
   // Spec 5.5: If relayUrl changed since last bound session, clear old token & rotate deviceId if needed for clean re-pair
   if (merged.lastBoundRelayUrl && merged.lastBoundRelayUrl !== merged.relayUrl) {
